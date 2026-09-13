@@ -97,13 +97,12 @@ The engine preserves source category context on generated category shuttle descr
 `CategoryMetadata` contains:
 
 - `name` — the source category name from `.weave` config.
-- `description?` — the category description when declared.
-- `patterns` — the category's declared glob strings exactly as authored; these are **not** expanded file lists.
+- `description` — the category description. Every category must declare one.
 - `isCategory: true` — an explicit marker that the descriptor was generated from a category.
 
-Adapters MAY use `category.patterns` when generating harness-specific routing rules, plugin config, or delegation metadata. Concrete routing decisions remain adapter-owned because only adapters know the target harness' routing model and resource conventions.
+Categories carry no file patterns. Category `patterns` was removed in 0.2.0, so routing to a category shuttle is driven by the category's `description` and `triggers`, which reach adapters through the descriptor and the delegation context. Concrete routing decisions remain adapter-owned because only adapters know the target harness' routing model and resource conventions.
 
-The engine MUST NOT expand category globs, scan project files to match patterns, inspect harness-owned resources, or infer concrete harness routes. It only carries declared strings forward on the descriptor.
+The engine MUST NOT scan project files, inspect harness-owned resources, or infer concrete harness routes.
 
 ### Runtime Store
 
@@ -262,7 +261,7 @@ Key rules:
 - `descriptor.composedPrompt` is the final prompt; raw `prompt`, `prompt_file`, and `prompt_append` are not adapter inputs.
 - `descriptor.models` is ordered model intent, not proof of model availability, not selected-model state, and not a harness-formatted model field.
 - `descriptor.rawToolPolicy` and `descriptor.effectiveToolPolicy` are abstract policy fields; adapters map them to concrete harness permissions.
-- `descriptor.category` is present only for generated category shuttles and carries category name, optional description, and patterns.
+- `descriptor.category` is present only for generated category shuttles and carries the category name and its required description. Categories have no patterns.
 - Disabled agents and suppressed category shuttles are omitted from materialization rather than emitted as disabled descriptors.
 - Workflow and command materialization are outside the `AgentDescriptor` contract.
 
@@ -281,7 +280,7 @@ Key rules:
 | `effectiveToolPolicy` | Engine | Abstract policy with every capability resolved. | Enforce through concrete harness permissions. |
 | `delegationTargets` | Engine | Harness-neutral eligible delegation targets and triggers. | Generate routing affordances, subagent references, commands, or unsupported notices. |
 | `skills` | Engine | Requested skill names only. | Resolve/load skill payloads through adapter-owned discovery; never expect paths/contents here. |
-| `category` | Engine | Optional generated-shuttle metadata: category name, optional description, declared patterns. | Apply harness routing/materialization conventions without expanding globs in the engine. |
+| `category` | Engine | Optional generated-shuttle metadata: category name and required description. | Apply harness routing/materialization conventions; route by description and triggers. |
 
 See [Spec 16 — Stable Adapter Descriptor Contract](specs/16-spec-stable-adapter-descriptor-contract/16-spec-stable-adapter-descriptor-contract.md) for the normative field table, examples, disabled-entry rules, and proof artifacts.
 
