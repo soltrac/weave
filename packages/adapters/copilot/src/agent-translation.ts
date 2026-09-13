@@ -6,6 +6,7 @@
  */
 
 import type { AgentDescriptor } from "@weaveio/weave-engine";
+import { adaptCopilotDelegationPrompt } from "./delegation-prompt.js";
 
 export interface AgentTranslationInput {
   /** The full agent descriptor from the engine composition layer. */
@@ -23,6 +24,14 @@ export interface AgentTranslationInput {
    * `descriptor.name` — see the module doc comment for why.
    */
   pluginAgentIdQualifier?: string;
+  /**
+   * Qualifier Copilot's `task` tool uses for this plugin's agents (the plugin
+   * manifest name, see `getPluginAgentIdQualifier` in `adapter.ts`). Used to
+   * qualify Loom's and Tapestry's delegation references. Independent of
+   * `pluginAgentIdQualifier`: Copilot assigns `<plugin-name>:<agent-name>`
+   * ids whatever the frontmatter `name:` says.
+   */
+  taskAgentIdQualifier?: string;
 }
 
 /**
@@ -67,12 +76,20 @@ function escapeYamlScalar(value: string): string {
  *   derives an agent's stable id from the file's stem, not from the
  *   frontmatter `name:` field, so this only affects display/selection
  *   through the affected app surfaces.
+ * - For Loom and Tapestry, the prompt body is adapted for Copilot's `task`
+ *   tool (qualified agent references plus a built-in replacement section) —
+ *   see `delegation-prompt.ts`.
  */
 export function translateAgentToCopilotMarkdown(
   input: AgentTranslationInput,
 ): string {
-  const { descriptor, allowedTools, mcpServers, pluginAgentIdQualifier } =
-    input;
+  const {
+    descriptor,
+    allowedTools,
+    mcpServers,
+    pluginAgentIdQualifier,
+    taskAgentIdQualifier,
+  } = input;
 
   const frontmatterLines: string[] = ["---"];
 
@@ -103,5 +120,12 @@ export function translateAgentToCopilotMarkdown(
 
   frontmatterLines.push("---");
 
-  return `${frontmatterLines.join("\n")}\n\n${descriptor.composedPrompt}\n`;
+  const body = adaptCopilotDelegationPrompt({
+    agentName: descriptor.name,
+    prompt: descriptor.composedPrompt,
+    delegationTargets: descriptor.delegationTargets,
+    taskAgentIdQualifier,
+  });
+
+  return `${frontmatterLines.join("\n")}\n\n${body}\n`;
 }

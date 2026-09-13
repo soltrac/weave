@@ -14,10 +14,12 @@ under `<projectRoot>/.weave/plugins/copilot/`. This is deliberately not a claim
 of OpenCode runtime parity: generated `.agent.md` files cannot provide durable
 workflow scheduling, lifecycle observation, idle continuation, compaction
 recovery, context monitoring, or analytics. GitHub Copilot CLI 1.0.83 has no
-plugin-hook system, no event bus, and no runtime SDK equivalent to OpenCode's
-`@opencode-ai/sdk` — its only externally observable behaviors are file-based
-agent discovery and non-interactive prompt invocation
-(`docs/artifacts/copilot-adapter-research.md`, §§1–8).
+event bus and no runtime SDK equivalent to OpenCode's `@opencode-ai/sdk`
+(`docs/artifacts/copilot-adapter-research.md`, §§1–8). It does run hooks,
+including hooks shipped in a plugin's `com.github.copilot/hooks/hooks.json`
+(live-verified 2026-09-12 for `preToolUse`; see
+[Delegation targets and Copilot built-in agents](#delegation-targets-and-copilot-built-in-agents)),
+but the adapter registers none.
 
 ## Decision
 
@@ -54,9 +56,9 @@ agent discovery and non-interactive prompt invocation
   agent with an invalid tool name loads and runs without error
   (`docs/artifacts/copilot-adapter-research.md`, §6). Weave's effective tool
   policy is therefore encoded as **prompt/frontmatter guidance the model is
-  expected to follow**, not an enforced sandbox boundary. There is no CLI-side
-  mechanism that blocks a disallowed tool call at the process level; the
-  adapter's `getCopilotToolClassifications()` maps Weave's abstract
+  expected to follow**, not an enforced sandbox boundary. The adapter registers
+  no CLI-side mechanism (such as a `preToolUse` hook) that blocks a disallowed
+  tool call at the process level; its `getCopilotToolClassifications()` maps Weave's abstract
   `allow`/`deny`/`ask` decisions onto this same non-enforcing frontmatter list.
   Treat `tool_policy` effective decisions in the Copilot adapter as **stated
   intent**, not a security control.
@@ -68,9 +70,11 @@ CLI 1.0.83 and are **not implemented** by `@weaveio/weave-adapter-copilot`:
 
 - **Workflow persistence** — no CLI concept of a durable, resumable workflow
   instance; each `copilot -p` invocation is a single non-interactive turn.
-- **Event logging / debug traces** — no plugin-hook or event-bus system was
-  found; `copilot plugin --help` describes install/list/uninstall/update only,
-  not runtime event subscription (`docs/artifacts/copilot-adapter-research.md`, §2).
+- **Event logging / debug traces** — no event-bus or runtime event
+  subscription API was found; `copilot plugin --help` describes
+  install/list/uninstall/update only (`docs/artifacts/copilot-adapter-research.md`, §2).
+  Plugin hooks do run (see [Context](#context)), but the adapter does not use
+  them for event logging.
 - **Idle continuation** — no session-idle hook exists to resume or nudge a
   stalled session.
 - **Recovery / compaction** — no CLI-exposed context-compaction or
@@ -231,6 +235,85 @@ for the regression coverage.
 
 See [the practical Copilot guide](adapters/copilot.md), [Adapter Boundary](adapter-boundary.md),
 and [`docs/artifacts/copilot-adapter-research.md`](artifacts/copilot-adapter-research.md).
+
+### Delegation targets and Copilot built-in agents
+
+**Problem.** Copilot's `task` tool, which runs subagents, only accepts the
+ids Copilot assigned to each agent. For plugin-contributed agents these are
+qualified (`weave:thread`, `weave:shuttle`, ...), but the shared Loom and
+Tapestry prompt templates name delegation targets by their bare Weave name
+(`thread`, `shuttle`). Copilot also ships built-in subagents (`explore`,
+`task`, `general-purpose`, `code-review`, `research`, `security-review`)
+that its own system prompt describes by name. Live runs against Copilot CLI
+1.0.83 (2026-09-12, Sonnet 5, a prompt asking for three parallel codebase
+investigations) showed Loom as the active agent sending **0/9** of these
+delegations to `weave:thread` and **9/9** to the built-in `explore`.
+
+**Decision.** The Copilot adapter adapts Loom's and Tapestry's prompts at
+translation time, in
+[`delegation-prompt.ts`](../packages/adapters/copilot/src/delegation-prompt.ts):
+
+- `**name**` and `` `name` `` references to the agent's own delegation
+  targets are rewritten to the qualified id (`**weave:thread**`), as is the
+  `` `shuttle-{category}` `` placeholder when category shuttles exist. Plain
+  prose, the agent's own name, and names that are not targets (such as the
+  "do not invent `shuttle-backend`" examples) are left alone. The qualifier
+  is always the plugin manifest name and does **not** follow
+  `qualifyPluginAgentNames`: Copilot assigns `weave:<name>` task ids even when
+  the frontmatter `name:` is bare (live-verified by probing
+  `copilot --agent __nope__` against a bundle with bare names), so the
+  display-name opt-out must not bring back bare delegation targets.
+- A "Delegation targets (GitHub Copilot)" section is appended. It states
+  that `agent_type` must be a `weave:<name>` id and maps each built-in to
+  the Weave agent that replaces it (`explore` → `weave:thread`, `research`
+  → `weave:spindle`, `task`/`general-purpose` → `weave:shuttle` or a
+  category shuttle, `code-review` → `weave:weft`, `security-review` →
+  `weave:warp`). A built-in is only named when its replacement is one of the
+  agent's delegation targets.
+
+With the adapted bundle, the same live runs sent **9/9** delegations to
+`weave:thread`.
+
+**Scope rule: act only while Loom or Tapestry is active.** Weave must not
+change Copilot's behavior in sessions where no Weave orchestrator is the
+active agent. The change is therefore limited to Loom's and Tapestry's
+prompts, which only take effect while one of them is selected. Every other
+agent's file, including a user-defined agent that can delegate, is
+emitted unchanged. The shared templates and the engine are untouched: this
+is Copilot-specific, and other harnesses have different built-ins.
+
+**Alternatives considered (live-verified, not adopted):**
+
+- **A `preToolUse` hook** shipped in the plugin at
+  `com.github.copilot/hooks/hooks.json` (for plugins declaring the Agent
+  Plugins v1 `$schema`, a root `hooks.json` is ignored). It receives
+  `{toolName: "task", toolArgs: {agent_type, ...}}` and can deny built-in
+  agent types with `{"permissionDecision": "deny", ...}`. The CLI then
+  retries with the Weave agent named in the deny reason. It works, but a
+  plugin hook runs in every Copilot session and its input doesn't say which
+  agent is active, so it breaks the scope rule above.
+- **The `subagents.disabledSubagents` user setting** (in
+  `~/.copilot/settings.json`) removes built-ins, `general-purpose`
+  included, from the `task` tool entirely. It is user-scope only, cannot be
+  set per repository or by a plugin, and affects every session.
+- **A custom agent with a built-in's name** (for example
+  `.github/agents/explore.agent.md`) does not override the built-in inside
+  the `task` tool. Once the built-in is disabled, the name is blocked for
+  the custom agent too.
+
+**Consequences.**
+
+- This is guidance, not enforcement. On a bad run, nothing prevents Loom
+  from choosing a built-in.
+- Evidence so far covers one model (Sonnet 5), one task shape (parallel
+  exploration), Loom only, and the CLI only. Tapestry and the GitHub
+  Copilot app have not been exercised live.
+- Sessions using Copilot's default agent are unaffected by design.
+
+Coverage:
+[`delegation-prompt.test.ts`](../packages/adapters/copilot/src/__tests__/delegation-prompt.test.ts),
+plus the [`marketplace.test.ts`](../packages/adapters/copilot/src/__tests__/marketplace.test.ts)
+drift check on the committed `plugins/copilot/` bundle.
 
 ### Self-hosted plugin marketplace
 
