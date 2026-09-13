@@ -182,11 +182,15 @@ _Avoid_: Any same-named agent, UI alias, unmanaged agent
 
 **Canonical Documentation Set**:
 The repo-root `docs/` corpus that defines current authoritative Weave behavior and guidance.
-_Avoid_: Public docs site, marketing docs, package docs mirror
+_Avoid_: Public docs site, marketing docs, contributor reference package
 
-**Public Documentation Package**:
-The `packages/docs/` site that publishes public-facing Weave documentation derived from the canonical docs.
-_Avoid_: Source of truth, internal spec set, canonical architecture docs
+**Public Documentation Site**:
+The user-facing docs at tryweave.io, maintained by hand in the weave-website repository. Update it when user-visible behavior changes.
+_Avoid_: Source of truth for architecture, internal spec set
+
+**Contributor Reference Package**:
+The `packages/docs/` Astro site. It is not published; it holds deeper reference and design material derived from the canonical docs.
+_Avoid_: Public docs site, source of truth
 
 ## Relationships
 
@@ -254,8 +258,8 @@ _Avoid_: Source of truth, internal spec set, canonical architecture docs
 - Delegation data inside a **Composed Prompt** is computed from agent `triggers`; a **Prompt Template** may decide where and how that delegation guidance is rendered.
 - A **Delegation Diagram** starts as a current-agent star: the current agent points to each eligible delegation target.
 - A **Weave-managed Agent** is reconciled by its **Canonical Agent Name**, while display-oriented fields may change without changing identity.
-- The **Canonical Documentation Set** is authoritative when Weave behavior and the **Public Documentation Package** disagree.
-- The **Public Documentation Package** should mirror the **Canonical Documentation Set** without replacing it.
+- The **Canonical Documentation Set** is authoritative when Weave behavior and the **Public Documentation Site** or the **Contributor Reference Package** disagree.
+- The **Public Documentation Site** must be updated when user-visible behavior changes; the **Contributor Reference Package** is derived from the **Canonical Documentation Set** without replacing it.
 
 ## Prompt Composition Templates
 
@@ -285,4 +289,4 @@ See [ADR 0004 — Workflow-First Execution Contract](docs/adr/0004-workflow-firs
 - "event log" can imply event sourcing; resolved: use **Runtime Journal** for observational runtime history that is not the source of truth.
 - "session runtime snapshot" can imply raw harness state capture; resolved: use **SessionSnapshot** for normalized Weave-visible observations only.
 - "agent name" can mean either a stable identifier or a UI-facing label; resolved: use **Canonical Agent Name** for identity and treat display text as presentation only.
-- "docs" can mean either the canonical repo docs or the public site; resolved: use **Canonical Documentation Set** for repo-root `docs/` and **Public Documentation Package** for `packages/docs/`.
+- "docs" can mean the canonical repo docs, the public site, or `packages/docs/`; resolved: use **Canonical Documentation Set** for repo-root `docs/`, **Public Documentation Site** for tryweave.io, and **Contributor Reference Package** for `packages/docs/`.
