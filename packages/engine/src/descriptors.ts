@@ -55,9 +55,15 @@ export function generateCategoryShuttles(
     if (config.disabled.agents.includes(shuttleName)) continue;
 
     const overrides: Partial<AgentConfig> = {};
-    if (category.models !== undefined) overrides.models = category.models;
+    overrides.description = category.description;
+    overrides.triggers =
+      category.triggers === undefined ? undefined : [...category.triggers];
+    if (category.models !== undefined) overrides.models = [...category.models];
     if (category.temperature !== undefined) {
       overrides.temperature = category.temperature;
+    }
+    if (category.fast !== undefined) {
+      overrides.fast = category.fast;
     }
     if (category.variant !== undefined) {
       overrides.variant = category.variant;
@@ -78,6 +84,24 @@ export function generateCategoryShuttles(
     result[shuttleName] = {
       config: {
         ...base,
+        models: base.models === undefined ? undefined : [...base.models],
+        skills: base.skills === undefined ? undefined : [...base.skills],
+        review_models:
+          base.review_models === undefined
+            ? undefined
+            : [...base.review_models],
+        tool_policy:
+          base.tool_policy === undefined ? undefined : { ...base.tool_policy },
+        routing:
+          base.routing === undefined
+            ? undefined
+            : {
+                ...base.routing,
+                delegation_exclude:
+                  base.routing.delegation_exclude === undefined
+                    ? undefined
+                    : [...base.routing.delegation_exclude],
+              },
         name: shuttleName,
         mode: "subagent",
         ...overrides,
@@ -85,7 +109,6 @@ export function generateCategoryShuttles(
       categoryMeta: {
         name: categoryName,
         description: category.description,
-        patterns: [...(category.patterns ?? [])],
         isCategory: true,
       },
     };

@@ -1,7 +1,79 @@
 import { describe, expect, it } from "bun:test";
+import { CONFIG_ERRORS_TRUNCATED } from "../config-error-policy.js";
 import { parseConfig } from "../parse-config.js";
 
+it("rejects prototype assignments and bounds validation diagnostics", () => {
+  for (const source of [
+    'agent __proto__ { prompt "bad" }',
+    "agent helper { tool_policy { __proto__ { polluted true } } }",
+    "constructor { polluted true }",
+    'agent helper { prompt "one" prompt "two" }',
+  ]) {
+    expect(parseConfig(source).isErr()).toBe(true);
+  }
+  expect(Object.prototype).not.toHaveProperty("polluted");
+  const source = Array.from(
+    { length: 100 },
+    (_, i) => `agent a${i} { temperature 900 }`,
+  ).join("\n");
+  const errors = parseConfig(source)._unsafeUnwrapErr();
+  expect(errors.length).toBeLessThanOrEqual(32);
+  expect(JSON.stringify(errors)).toContain(CONFIG_ERRORS_TRUNCATED);
+  expect(JSON.stringify(errors).length).toBeLessThan(8192);
+});
+
+describe("parseConfig — execution controls", () => {
+  it.each([
+    true,
+  ])("preserves fast=%s and concurrency through the full pipeline", (fast) => {
+    const config = parseConfig(
+      `agent worker { fast ${fast} } category web { description "Category work" fast ${fast} } settings { delegation { max_concurrency 5 } }`,
+    )._unsafeUnwrap();
+    expect(config.agents.worker?.fast).toBe(fast);
+    expect(config.categories.web?.fast).toBe(fast);
+    expect(config.settings.delegation?.max_concurrency).toBe(5);
+  });
+  it.each([
+    "0",
+    "1.5",
+    "9007199254740992",
+    '"5"',
+  ])("rejects invalid concurrency %s", (value) => {
+    expect(
+      parseConfig(
+        `settings { delegation { max_concurrency ${value} } }`,
+      )._unsafeUnwrapErr()[0],
+    ).toMatchObject({ path: "settings.delegation.max_concurrency" });
+  });
+  it("rejects negative concurrency at the lexer boundary", () => {
+    expect(
+      parseConfig(
+        "settings { delegation { max_concurrency -1 } }",
+      )._unsafeUnwrapErr()[0],
+    ).toMatchObject({ type: "UnexpectedCharacter", char: "-" });
+  });
+  it.each([
+    'agent worker { fast "yes" }',
+    'category web { description "Category work" fast 1 }',
+    "settings { delegation { unknown 5 } }",
+  ])("rejects invalid control declarations: %s", (source) => {
+    expect(parseConfig(source).isErr()).toBe(true);
+  });
+});
+
 describe("parseConfig — valid sources", () => {
+  it.each([
+    "\n",
+    "\r\n",
+    "\r",
+  ])("normalizes multiline prompts in the full pipeline (%j)", (ending) => {
+    const content = ["", "    first", "", "      second", ""].join(ending);
+    const config = parseConfig(
+      `agent helper { prompt """${content}""" }`,
+    )._unsafeUnwrap();
+    expect(config.agents.helper?.prompt).toBe("first\n\n  second");
+  });
+
   it("minimal valid source: single agent with inline prompt", () => {
     const src = `agent helper {
   prompt "You are a helpful assistant."
@@ -28,7 +100,7 @@ describe("parseConfig — valid sources", () => {
     network ask
   }
   triggers [
-    { domain "Orchestration" trigger "Complex multi-step tasks" }
+    "Complex multi-step tasks"
   ]
   skills ["tdd", "code-review"]
 }
@@ -50,7 +122,7 @@ agent shuttle {
 category backend {
   description "Backend APIs, services, persistence"
   models ["claude-sonnet-4-5"]
-  patterns ["src/api/**", "src/server/**", "src/db/**"]
+
   temperature 0.2
   tool_policy {
     read allow
@@ -61,7 +133,7 @@ category backend {
 
 category frontend {
   description "Frontend UI, styling"
-  patterns ["src/components/**", "src/pages/**"]
+
 }
 
 disable agents ["warp", "spindle"]
@@ -85,7 +157,7 @@ settings {
     // Categories
     expect(config.categories.backend).toBeDefined();
     expect(config.categories.frontend).toBeDefined();
-    expect(config.categories.backend?.patterns).toContain("src/api/**");
+    expect(config.categories.backend).not.toHaveProperty("patterns");
 
     // Disabled
     expect(config.disabled.agents).toEqual(["warp", "spindle"]);
@@ -114,8 +186,8 @@ settings {
   }
 
   triggers [
-    { domain "Orchestration" trigger "Complex multi-step tasks" }
-    { domain "Architecture" trigger "System design and planning" }
+    "Complex multi-step tasks"
+    "System design and planning"
   ]
 
   skills ["tdd", "code-review"]
@@ -125,10 +197,7 @@ settings {
     const loom = result._unsafeUnwrap().agents.loom;
     expect(loom?.models).toEqual(["claude-sonnet-4-5", "gpt-4o"]);
     expect(loom?.triggers).toHaveLength(2);
-    expect(loom?.triggers?.[0]).toEqual({
-      domain: "Orchestration",
-      trigger: "Complex multi-step tasks",
-    });
+    expect(loom?.triggers?.[0]).toEqual("Complex multi-step tasks");
     expect(loom?.skills).toEqual(["tdd", "code-review"]);
   });
 
@@ -549,7 +618,7 @@ describe("parseConfig — workflows", () => {
 }
 
 category backend {
-  patterns ["src/api/**"]
+  description "Category work"
 }
 
 workflow quick-fix {
@@ -652,7 +721,7 @@ describe("parseConfig — prompt_append_file", () => {
   it("category with prompt_append_file parses successfully and field is present in output", () => {
     const src = `category frontend {
   description "Frontend UI"
-  patterns ["src/components/**"]
+
   prompt_append_file "cat-extra.md"
 }`;
     const result = parseConfig(src);
@@ -1647,7 +1716,7 @@ describe("parseConfig — variant field", () => {
   it("category with variant parses end-to-end", () => {
     const src = `category backend {
   description "Backend APIs"
-  patterns ["src/api/**"]
+
   variant "low"
 }`;
     const result = parseConfig(src);

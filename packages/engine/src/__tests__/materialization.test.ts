@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { parseConfig, type WeaveConfig } from "@weaveio/weave-core";
+import { errAsync, okAsync } from "neverthrow";
 
 import {
   composeAgentDescriptor,
@@ -43,6 +44,90 @@ describe("materialization barrel exports", () => {
 });
 
 describe("materializeAgents", () => {
+  it("shares prompt reads across explicit, review, category and append sources only within one call", async () => {
+    const config = cfg(`
+      agent shuttle { prompt_file "shared.md" prompt_append_file "shared.md" models ["base"] review_models ["review"] }
+      agent helper { prompt_file "shared.md" }
+      category backend { models ["category"] description "Category work" }
+    `);
+    let reads = 0;
+    const promptFileReader = { read: () => okAsync(`version ${++reads}`) };
+    const first = (
+      await materializeAgents({ config, promptFileReader })
+    )._unsafeUnwrap();
+    expect(first.errors).toEqual([]);
+    expect(
+      first.agents.some((agent) => agent.source === "review-variant"),
+    ).toBe(true);
+    expect(
+      first.agents.every((agent) =>
+        agent.descriptor.composedPrompt.startsWith("version 1"),
+      ),
+    ).toBe(true);
+    expect(reads).toBe(1);
+    const second = (
+      await materializeAgents({ config, promptFileReader })
+    )._unsafeUnwrap();
+    expect(reads).toBe(2);
+    expect(second.agents[0]?.descriptor.composedPrompt).toBe(
+      "version 2\n\nversion 2",
+    );
+  });
+
+  it("shares failed reads and reports each affected agent", async () => {
+    const config = cfg(
+      'agent first { prompt_file "missing.md" } agent second { prompt_file "missing.md" }',
+    );
+    let reads = 0;
+    const plan = (
+      await materializeAgents({
+        config,
+        promptFileReader: {
+          read: () => {
+            reads++;
+            return errAsync({ message: "missing" });
+          },
+        },
+      })
+    )._unsafeUnwrap();
+    expect(reads).toBe(1);
+    expect(plan.agents).toEqual([]);
+    expect(plan.errors).toHaveLength(2);
+  });
+
+  it("isolates descriptor arrays, policies and trigger objects from config and other descriptors", async () => {
+    const config = cfg(`
+      agent router { prompt "Router" tool_policy { delegate ask } }
+      agent shuttle { prompt "Worker" models ["model"] skills ["skill"] triggers ["implement"] tool_policy { read allow delegate deny } }
+      category backend { description "Category work" variant "high" }
+      category frontend { description "Category work" }
+    `);
+    const plan = (await materializeAgents({ config }))._unsafeUnwrap();
+    const backend = plan.agents.find(
+      (agent) => agent.agentName === "shuttle-backend",
+    )?.descriptor;
+    if (backend === undefined) throw new Error("missing category descriptor");
+    backend.models.push("other");
+    backend.skills.push("other");
+    if (backend.category) backend.category.description = "other";
+    if (backend.rawToolPolicy) backend.rawToolPolicy.read = "deny";
+    const router = plan.agents[0]?.descriptor;
+    const target = router?.delegationTargets.find(
+      (target) => target.name === "shuttle",
+    );
+    if (target) target.triggers[0] = "changed";
+    expect(config.agents.shuttle?.models).toEqual(["model"]);
+    expect(config.agents.shuttle?.skills).toEqual(["skill"]);
+    expect(config.agents.shuttle?.triggers).toEqual(["implement"]);
+    expect(config.agents.shuttle?.tool_policy?.read).toBe("allow");
+    expect(config.categories.backend?.description).toBe("Category work");
+    expect(
+      plan.agents.find((agent) => agent.agentName === "shuttle-frontend")
+        ?.descriptor.models,
+    ).toEqual(["model"]);
+    expect(backend.variant).toBe("high");
+  });
+
   describe("builtin agents", () => {
     it("produces descriptors for builtin-named declared agents", async () => {
       const plan = await materializeConfig(`
@@ -115,7 +200,7 @@ describe("materializeAgents", () => {
         agent shuttle { prompt "Base shuttle" models ["model-shuttle"] mode all }
 
         category frontend {
-          patterns ["src/**/*.tsx"]
+          description "Category work"
           models ["model-frontend"]
         }
       `);
@@ -125,8 +210,7 @@ describe("materializeAgents", () => {
       expect(plan.agents[2]?.descriptor.mode).toBe("subagent");
       expect(plan.agents[2]?.descriptor.category).toEqual({
         name: "frontend",
-        description: undefined,
-        patterns: ["src/**/*.tsx"],
+        description: "Category work",
       });
       expect(plan.agents[0]?.source).toBe("explicit");
       expect(plan.agents[1]?.source).toBe("explicit");
@@ -137,9 +221,9 @@ describe("materializeAgents", () => {
       const plan = await materializeConfig(`
         agent shuttle { prompt "Base shuttle" models ["model-shuttle"] mode all }
 
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
-        category backend { patterns ["src/**/*.ts"] models ["model-backend"] }
-        category docs { patterns ["docs/**/*.md"] models ["model-docs"] }
+        category frontend { description "Category work" models ["model-frontend"] }
+        category backend { description "Category work" models ["model-backend"] }
+        category docs { description "Category work" models ["model-docs"] }
       `);
 
       expect(agentNames(plan)).toEqual([
@@ -156,7 +240,7 @@ describe("materializeAgents", () => {
 
         category frontend {
           description "Frontend UI"
-          patterns ["src/**/*.tsx"]
+
           models ["model-frontend-a", "model-frontend-b"]
         }
       `);
@@ -194,7 +278,7 @@ describe("materializeAgents", () => {
         }
 
         category frontend {
-          patterns ["src/**/*.tsx"]
+          description "Category work"
           models ["model-frontend"]
         }
 
@@ -224,8 +308,8 @@ describe("materializeAgents", () => {
         agent loom { prompt "Loom" models ["model-loom"] }
         agent shuttle { prompt "Base shuttle" models ["model-shuttle"] mode all }
 
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
-        category backend { patterns ["src/**/*.ts"] models ["model-backend"] }
+        category frontend { description "Category work" models ["model-frontend"] }
+        category backend { description "Category work" models ["model-backend"] }
 
         disable agents ["shuttle"]
       `);
@@ -237,8 +321,8 @@ describe("materializeAgents", () => {
       const plan = await materializeConfig(`
         agent shuttle { prompt "Base shuttle" models ["model-shuttle"] mode all }
 
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
-        category backend { patterns ["src/**/*.ts"] models ["model-backend"] }
+        category frontend { description "Category work" models ["model-frontend"] }
+        category backend { description "Category work" models ["model-backend"] }
 
         disable agents ["shuttle-frontend"]
       `);
@@ -267,7 +351,7 @@ describe("materializeAgents", () => {
         config: cfg(`
           agent loom { prompt "Loom" models ["model-loom"] }
           agent shuttle { prompt "Shuttle" models ["model-shuttle"] mode all }
-          category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
+          category frontend { description "Category work" models ["model-frontend"] }
         `),
       });
 
@@ -295,8 +379,8 @@ describe("materializeAgents", () => {
         agent shuttle { prompt "Shuttle" models ["model-shuttle"] mode all }
         agent omega { prompt "Omega" models ["model-omega"] }
 
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
-        category backend { patterns ["src/**/*.ts"] models ["model-backend"] }
+        category frontend { description "Category work" models ["model-frontend"] }
+        category backend { description "Category work" models ["model-backend"] }
       `);
 
       expect(agentNames(plan)).toEqual([
@@ -314,9 +398,9 @@ describe("materializeAgents", () => {
         agent shuttle { prompt "Shuttle" models ["model-shuttle"] mode all }
         agent omega { prompt "Omega" models ["model-omega"] }
 
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
-        category backend { patterns ["src/**/*.ts"] models ["model-backend"] }
-        category docs { patterns ["docs/**/*.md"] models ["model-docs"] }
+        category frontend { description "Category work" models ["model-frontend"] }
+        category backend { description "Category work" models ["model-backend"] }
+        category docs { description "Category work" models ["model-docs"] }
       `);
 
       const first = await materializeAgents({ config });
@@ -344,7 +428,7 @@ describe("materializeAgents", () => {
           agent shuttle { prompt "Base shuttle" models ["model-shuttle"] mode all }
           agent shuttle-frontend { prompt "Explicit frontend" models ["model-explicit"] }
 
-          category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
+          category frontend { description "Category work" models ["model-frontend"] }
         `),
       });
 
@@ -411,7 +495,7 @@ describe("materializeAgents", () => {
           agent shuttle { prompt "Base shuttle" models ["model-shuttle"] mode all }
           agent shuttle-frontend { prompt "Explicit frontend" models ["model-explicit"] }
 
-          category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
+          category frontend { description "Category work" models ["model-frontend"] }
         `),
       });
 
@@ -489,7 +573,7 @@ describe("materializeAgents", () => {
           agent shuttle-backend { prompt "Explicit backend" models ["model-explicit"] }
           agent loom { prompt "Loom" models ["model-loom"] mode primary }
 
-          category backend { patterns ["src/**/*.ts"] models ["model-backend"] }
+          category backend { description "Category work" models ["model-backend"] }
         `),
       });
 
@@ -578,7 +662,7 @@ describe("materializeAgents", () => {
       const plan = await materializeConfig(`
         agent loom { prompt "Loom" models ["model-loom"] mode primary review_models ["review-a", "review-b"] }
         agent shuttle { prompt "Shuttle" models ["model-shuttle"] mode all }
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
+        category frontend { description "Category work" models ["model-frontend"] }
       `);
 
       // Order: explicit agents, category shuttles, review variants
@@ -652,7 +736,7 @@ describe("materializeAgents", () => {
       const plan = await materializeConfig(`
         agent loom { prompt "Loom" models ["model-loom"] mode primary review_models ["rev-model"] }
         agent shuttle { prompt "Shuttle" models ["model-shuttle"] mode all }
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
+        category frontend { description "Category work" models ["model-frontend"] }
       `);
 
       const sources = plan.agents.map((a) => a.source);
@@ -665,7 +749,7 @@ describe("materializeAgents", () => {
       const plan = await materializeConfig(`
         agent loom { prompt "Loom" models ["model-loom"] mode primary review_models ["rev-model"] }
         agent shuttle { prompt "Shuttle" models ["model-shuttle"] mode all }
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
+        category frontend { description "Category work" models ["model-frontend"] }
       `);
 
       const explicit = plan.agents.filter((a) => a.source === "explicit");
@@ -676,8 +760,8 @@ describe("materializeAgents", () => {
       const plan = await materializeConfig(`
         agent loom { prompt "Loom" models ["model-loom"] mode primary }
         agent shuttle { prompt "Shuttle" models ["model-shuttle"] mode all }
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
-        category backend { patterns ["src/**/*.ts"] models ["model-backend"] }
+        category frontend { description "Category work" models ["model-frontend"] }
+        category backend { description "Category work" models ["model-backend"] }
       `);
 
       const shuttles = plan.agents.filter(
@@ -718,7 +802,7 @@ describe("materializeAgents", () => {
       const plan = await materializeConfig(`
         agent loom { prompt "Loom" models ["model-loom"] mode primary }
         agent shuttle { prompt "Shuttle" models ["model-shuttle"] mode all }
-        category frontend { patterns ["src/**/*.tsx"] models ["model-frontend"] }
+        category frontend { description "Category work" models ["model-frontend"] }
       `);
 
       for (const agent of plan.agents) {
@@ -793,7 +877,7 @@ describe("materializeAgents", () => {
           mode all
           variant "shuttle-v1"
         }
-        category frontend { patterns ["src/**/*.tsx"] }
+        category frontend { description "Category work" }
       `);
 
       const frontend = plan.agents.find(
@@ -811,7 +895,7 @@ describe("materializeAgents", () => {
           variant "shuttle-v1"
         }
         category frontend {
-          patterns ["src/**/*.tsx"]
+          description "Category work"
           variant "frontend-v2"
         }
       `);

@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { WeaveConfig } from "@weaveio/weave-core";
+import { parseConfig, type WeaveConfig } from "@weaveio/weave-core";
 import type { Result } from "neverthrow";
 import type {
   ConfigSkillResolutionResult,
@@ -22,9 +22,62 @@ import type {
   SkillResolutionInput,
 } from "../skill-resolution.js";
 import {
+  resolveAvailableSkillsForAgent,
+  resolveAvailableSkillsForConfig,
   resolveSkillsForAgent,
   resolveSkillsForConfig,
 } from "../skill-resolution.js";
+
+describe("available skill resolution", () => {
+  it("returns matches and missing warnings without changing strict callers", () => {
+    const skillInfo = { name: "present", metadata: { opaque: true } };
+    const input = {
+      agentName: "helper",
+      agentSkills: ["present", "missing", "present", "disabled"],
+      availableSkills: [skillInfo],
+      disabledSkills: ["disabled"],
+    };
+    const result = resolveAvailableSkillsForAgent(input)._unsafeUnwrap();
+    expect(result.resolved.map((skill) => skill.name)).toEqual([
+      "present",
+      "present",
+    ]);
+    expect(result.resolved[0]?.skillInfo).toBe(skillInfo);
+    expect(result.warnings).toEqual([
+      { type: "MissingSkill", agentName: "helper", skillName: "missing" },
+    ]);
+    expect(resolveSkillsForAgent(input)._unsafeUnwrapErr()).toEqual(
+      result.warnings,
+    );
+  });
+
+  it("keeps disabled filtering and reports category conflicts explicitly", () => {
+    const config = parseConfig(`
+      agent shuttle { prompt "Worker" skills ["present", "missing"] }
+      agent disabled { prompt "Disabled" skills ["other"] }
+      category backend { description "Category work" }
+      disable agents ["disabled"]
+    `)._unsafeUnwrap();
+    const input = { config, availableSkills: [{ name: "present" }] };
+    const result = resolveAvailableSkillsForConfig(input)._unsafeUnwrap();
+    expect(Object.keys(result.resolved)).toEqual([
+      "shuttle",
+      "shuttle-backend",
+    ]);
+    expect(result.warnings).toHaveLength(2);
+    expect(result.resolved["shuttle-backend"]?.[0]?.name).toBe("present");
+    expect(resolveSkillsForConfig(input)._unsafeUnwrapErr()).toEqual(
+      result.warnings,
+    );
+    config.agents["shuttle-backend"] = { prompt: "Collision" };
+    expect(resolveAvailableSkillsForConfig(input)._unsafeUnwrapErr().type).toBe(
+      "CategoryShuttleConflictError",
+    );
+    expect(resolveSkillsForConfig(input)._unsafeUnwrapErr()[0]?.skillName).toBe(
+      "__category_shuttle_conflict__",
+    );
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Type-level helpers — prove the shape at compile time
@@ -750,7 +803,7 @@ describe("resolveSkillsForConfig — generated category shuttle output", () => {
         shuttle: { skills: ["tdd"] },
       },
       categories: {
-        backend: { patterns: ["src/api/**"] },
+        backend: { description: "Category work" },
       },
     });
 
@@ -774,7 +827,7 @@ describe("resolveSkillsForConfig — generated category shuttle output", () => {
         shuttle: { skills: ["tdd"] },
       },
       categories: {
-        frontend: { patterns: ["src/components/**"] },
+        frontend: { description: "Category work" },
       },
     });
 
@@ -795,9 +848,9 @@ describe("resolveSkillsForConfig — generated category shuttle output", () => {
         shuttle: {},
       },
       categories: {
-        backend: { patterns: ["src/api/**"] },
-        frontend: { patterns: ["src/components/**"] },
-        infra: { patterns: ["infra/**"] },
+        backend: { description: "Category work" },
+        frontend: { description: "Category work" },
+        infra: { description: "Category work" },
       },
     });
 
@@ -836,7 +889,7 @@ describe("resolveSkillsForConfig — generated category shuttle output", () => {
     const config = makeConfig({
       agents: { loom: {} },
       categories: {
-        backend: { patterns: ["src/api/**"] },
+        backend: { description: "Category work" },
       },
     });
 
@@ -930,7 +983,7 @@ describe("resolveSkillsForConfig — disabled-skill behavior in batch mode", () 
         shuttle: { skills: ["tdd"] },
       },
       categories: {
-        backend: { patterns: ["src/api/**"] },
+        backend: { description: "Category work" },
       },
       disabled: { agents: ["shuttle-backend"], hooks: [], skills: [] },
     });
@@ -954,7 +1007,7 @@ describe("resolveSkillsForConfig — disabled-skill behavior in batch mode", () 
         shuttle: { skills: ["tdd"] },
       },
       categories: {
-        backend: { patterns: ["src/api/**"] },
+        backend: { description: "Category work" },
       },
       disabled: { agents: ["shuttle"], hooks: [], skills: [] },
     });
@@ -1033,7 +1086,7 @@ describe("resolveSkillsForConfig — accumulated missing-skill errors", () => {
         shuttle: { skills: ["missing-shuttle"] },
       },
       categories: {
-        backend: { patterns: ["src/api/**"] },
+        backend: { description: "Category work" },
       },
     });
 

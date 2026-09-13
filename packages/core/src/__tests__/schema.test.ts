@@ -25,6 +25,57 @@ import {
 // @weaveio/weave-core barrel — public API assertions
 // ---------------------------------------------------------------------------
 
+describe("execution control schemas", () => {
+  it.each([true])("accepts fast=%s for agents and categories", (fast) => {
+    expect(AgentConfigSchema.parse({ fast }).fast).toBe(fast);
+    expect(
+      CategoryConfigSchema.parse({ description: "Category work", fast }).fast,
+    ).toBe(fast);
+  });
+  it.each([false, "true", 1, null])("rejects invalid fast=%j", (fast) => {
+    expect(AgentConfigSchema.safeParse({ fast }).success).toBe(false);
+    expect(
+      CategoryConfigSchema.safeParse({ description: "Category work", fast })
+        .success,
+    ).toBe(false);
+  });
+  it.each([
+    1,
+    5,
+    Number.MAX_SAFE_INTEGER,
+  ])("accepts concurrency %s", (max_concurrency) => {
+    expect(
+      SettingsConfigSchema.parse({ delegation: { max_concurrency } }).delegation
+        ?.max_concurrency,
+    ).toBe(max_concurrency);
+  });
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    "5",
+    null,
+  ])("rejects concurrency %j", (max_concurrency) => {
+    const parsed = SettingsConfigSchema.safeParse({
+      delegation: { max_concurrency },
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success)
+      expect(parsed.error.issues[0]?.path).toEqual([
+        "delegation",
+        "max_concurrency",
+      ]);
+  });
+  it("preserves omission and rejects unknown delegation keys", () => {
+    expect(AgentConfigSchema.parse({}).fast).toBeUndefined();
+    expect(SettingsConfigSchema.parse({}).delegation).toBeUndefined();
+    expect(
+      SettingsConfigSchema.safeParse({ delegation: { unknown: 1 } }).success,
+    ).toBe(false);
+  });
+});
+
 describe("@weaveio/weave-core barrel exports", () => {
   it("exports ToolPermissionSchema as a Zod enum with allow/deny/ask", () => {
     expect(ToolPermissionSchema).toBeDefined();
@@ -892,7 +943,7 @@ describe("AgentConfigSchema — prompt_append_file", () => {
 
 describe("CategoryConfigSchema — prompt_append_file", () => {
   const baseCategory = {
-    patterns: ["src/**/*.ts"],
+    description: "Category work",
   };
 
   it("accepts prompt_append_file with a valid relative path", () => {
@@ -1727,7 +1778,7 @@ describe("CategoryConfigSchema — variant", () => {
   it("accepts category with variant as a valid string", () => {
     const r = CategoryConfigSchema.safeParse({
       description: "Backend category",
-      patterns: ["src/api/**"],
+
       variant: "backend-v3",
     });
     expect(r.success).toBe(true);
@@ -1739,7 +1790,6 @@ describe("CategoryConfigSchema — variant", () => {
   it("accepts category without variant (optional)", () => {
     const r = CategoryConfigSchema.safeParse({
       description: "Backend category",
-      patterns: ["src/api/**"],
     });
     expect(r.success).toBe(true);
     if (r.success) {
@@ -1750,7 +1800,7 @@ describe("CategoryConfigSchema — variant", () => {
   it("accepts variant as empty string (valid string; runtime semantics are harness-owned)", () => {
     const r = CategoryConfigSchema.safeParse({
       description: "Backend category",
-      patterns: ["src/api/**"],
+
       variant: "",
     });
     expect(r.success).toBe(true);
@@ -1762,7 +1812,7 @@ describe("CategoryConfigSchema — variant", () => {
   it("rejects variant as non-string (array)", () => {
     const r = CategoryConfigSchema.safeParse({
       description: "Backend category",
-      patterns: ["src/api/**"],
+
       variant: ["v1", "v2"],
     });
     expect(r.success).toBe(false);

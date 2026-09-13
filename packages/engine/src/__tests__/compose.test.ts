@@ -9,6 +9,7 @@ import type {
   WorkflowStep,
 } from "@weaveio/weave-core";
 import { parseConfig } from "@weaveio/weave-core";
+import { errAsync, okAsync } from "neverthrow";
 
 import {
   type AppendCollision,
@@ -62,6 +63,80 @@ beforeAll(async () => {
 });
 
 describe("composeAgentDescriptor", () => {
+  it.each([
+    true,
+  ])("retains explicit fast=%s in the normalized descriptor", async (fast) => {
+    const worker: AgentConfig = { prompt: "Worker", fast };
+    const descriptor = await descriptorFor("worker", worker, cfg(), { worker });
+    expect(descriptor.fast).toBe(fast);
+  });
+  it("preserves literal tags in descriptions and string triggers", async () => {
+    const config = cfg(`
+      agent router {
+        prompt "{{{agent.description}}} {{#delegation.targets}}{{{description}}} {{#triggers}}{{{.}}}{{/triggers}}{{/delegation.targets}}"
+        description "{{example}}"
+        tool_policy { delegate allow }
+      }
+      agent helper {
+        prompt "Helper"
+        description "{{{example}}}"
+        triggers ["{{hint}}"]
+      }
+    `);
+    const descriptor = await descriptorFor(
+      "router",
+      config.agents.router,
+      config,
+      config.agents,
+    );
+    expect(descriptor.composedPrompt).toBe(
+      "{{example}} {{{example}}} {{hint}}",
+    );
+  });
+
+  it("uses the trailing reader for primary and append files", async () => {
+    const config = cfg(
+      'agent helper { prompt_file "base.md" prompt_append_file "append.md" }',
+    );
+    const reads: string[] = [];
+    const reader = {
+      read: (path: string) => {
+        reads.push(path);
+        return okAsync(`${path}: {{agent.name}}`);
+      },
+    };
+    const result = await composeAgentDescriptor(
+      "helper",
+      config.agents.helper,
+      config,
+      config.agents,
+      undefined,
+      undefined,
+      {},
+      reader,
+    );
+    expect(result._unsafeUnwrap().composedPrompt).toBe(
+      "base.md: helper\n\nappend.md: helper",
+    );
+    expect(reads).toEqual(["base.md", "append.md"]);
+    const failed = await composeAgentDescriptor(
+      "helper",
+      config.agents.helper,
+      config,
+      config.agents,
+      undefined,
+      undefined,
+      {},
+      { read: () => errAsync({ message: "reader failed" }) },
+    );
+    expect(failed._unsafeUnwrapErr()).toMatchObject({
+      type: "PromptFileReadError",
+      agentName: "helper",
+      promptFilePath: "base.md",
+      fileErrorMessage: "reader failed",
+    });
+  });
+
   describe("identity fields", () => {
     it("Builtin_descriptor_keeps_stable_name_and_optional_displayName", async () => {
       const config = cfg(`
@@ -364,7 +439,7 @@ describe("composeAgentDescriptor", () => {
   });
 
   describe("delegation targets", () => {
-    it("Agent_with_no_delegate_allow_has_empty_delegation_targets", async () => {
+    it("Agent_with_delegate_ask_retains_eligible_delegation_targets", async () => {
       const config = cfg(`
         agent loom {
           prompt "Base prompt."
@@ -384,7 +459,9 @@ describe("composeAgentDescriptor", () => {
         config.agents,
       );
 
-      expect(descriptor.delegationTargets).toEqual([]);
+      expect(descriptor.delegationTargets.map((target) => target.name)).toEqual(
+        ["helper"],
+      );
       expect(descriptor.composedPrompt).toBe("Base prompt.");
     });
 
@@ -682,7 +759,7 @@ describe("composeAgentDescriptor", () => {
         {
           name: "frontend",
           description: "Frontend UI, styling, accessibility",
-          patterns: ["src/components/**", "**/*.tsx"],
+
           isCategory: true,
         },
       );
@@ -690,7 +767,6 @@ describe("composeAgentDescriptor", () => {
       expect(descriptor.category).toEqual({
         name: "frontend",
         description: "Frontend UI, styling, accessibility",
-        patterns: ["src/components/**", "**/*.tsx"],
       });
     });
 
@@ -726,7 +802,7 @@ describe("composeAgentDescriptor", () => {
         {
           name: "frontend",
           description: "Frontend UI",
-          patterns: ["src/components/**"],
+
           isCategory: true,
         },
       );
@@ -963,7 +1039,7 @@ describe("composeAgentDescriptor", () => {
       });
     });
 
-    it("RawToolPolicy_is_preserved_as_is_from_config", async () => {
+    it("RawToolPolicy_preserves_values_without_aliasing_config", async () => {
       const config = cfg(`
         agent loom {
           prompt "Base prompt."
@@ -982,7 +1058,8 @@ describe("composeAgentDescriptor", () => {
         config.agents,
       );
 
-      expect(descriptor.rawToolPolicy).toBe(agentConfig.tool_policy);
+      expect(descriptor.rawToolPolicy).toEqual(agentConfig.tool_policy);
+      expect(descriptor.rawToolPolicy).not.toBe(agentConfig.tool_policy);
       expect(descriptor.rawToolPolicy).toEqual({
         read: "allow",
         network: "deny",
@@ -1063,14 +1140,14 @@ describe("composeAgentDescriptor", () => {
             network deny
           }
           triggers [
-            { domain "Implementation" trigger "Build feature" }
+            "Build feature"
           ]
         }
         agent helper {
           description "Implementation helper"
           prompt "Help."
           triggers [
-            { domain "Code" trigger "Small implementation" }
+            "Small implementation"
           ]
         }
       `);
@@ -1110,7 +1187,7 @@ describe("composeAgentDescriptor", () => {
         {
           name: "helper",
           description: "Implementation helper",
-          triggers: [{ domain: "Code", trigger: "Small implementation" }],
+          triggers: ["Small implementation"],
           isCategory: false,
         },
       ]);
@@ -1176,7 +1253,7 @@ describe("composeAgentDescriptor", () => {
         }
         category frontend {
           description "Frontend UI"
-          patterns ["src/components/**", "src/pages/**/*.tsx"]
+
           models ["model-frontend"]
         }
       `);
@@ -1198,7 +1275,6 @@ describe("composeAgentDescriptor", () => {
         {
           name: "frontend",
           description: config.categories.frontend?.description,
-          patterns: config.categories.frontend?.patterns,
           isCategory: true,
         },
       );
@@ -1207,7 +1283,6 @@ describe("composeAgentDescriptor", () => {
       expect(descriptor.category).toEqual({
         name: "frontend",
         description: "Frontend UI",
-        patterns: ["src/components/**", "src/pages/**/*.tsx"],
       });
     });
 
