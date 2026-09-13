@@ -50,15 +50,12 @@ opencode debug config
 opencode debug info
 ```
 
-For local development, use an absolute file URL to the built plugin bundle:
+## Local development
 
-```json
-{
-  "plugin": [
-    "file:///absolute/path/to/packages/adapters/opencode/dist/plugin.js"
-  ]
-}
-```
+To run a local build of this adapter in OpenCode, point the `plugin` entry at
+`dist/plugin.js` with an absolute `file://` URL, in place of the published
+package. See [Dogfooding a local build](../../../README.md#dogfooding-a-local-build)
+for the build commands and the other harnesses.
 
 ## Supported host versions
 

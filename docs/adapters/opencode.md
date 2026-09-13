@@ -34,9 +34,8 @@ reproducible installs. The package also supports the `latest`, `next`, and
 OpenCode fetches the package at startup. There is no separate `npm install`
 step. Restart OpenCode after changing the plugin version. For local
 development, build the adapter and use an absolute file URL to
-`packages/adapters/opencode/dist/plugin.js`. See the [package
-README](../../packages/adapters/opencode/README.md) for an isolated validation
-environment.
+`packages/adapters/opencode/dist/plugin.js` in place of the published package;
+see [Dogfooding a local build](../../README.md#dogfooding-a-local-build).
 
 ## Release channels and host support
 
