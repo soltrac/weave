@@ -6,17 +6,24 @@
  * unsupported fields are skipped with explicit warnings.
  */
 
+import { posix, win32 } from "node:path";
 import {
   copySafeGraph,
   parseConfig,
   type SafeGraphValue,
 } from "@weaveio/weave-core";
 import { type ParseError, parse as parseJsonc } from "jsonc-parser";
-import { Result } from "neverthrow";
+import { err, ok, Result } from "neverthrow";
 import { createConversionWarnings } from "./legacy-conversion-diagnostics.js";
 import { isSafeDslName } from "./legacy-dsl-identifiers.js";
 import { inspectLegacyJsonc } from "./legacy-jsonc-inspect.js";
-import type { ConversionResult, ConversionWarning } from "./types.js";
+import type {
+  ConversionResult,
+  ConversionWarning,
+  LegacyConversionError,
+  LegacyPromptFileContents,
+  MigratedPromptFile,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,6 +50,70 @@ const UNSUPPORTED_LEGACY_FIELDS = new Map<string, string>([
     "background",
     "legacy background settings are not supported in migration v1; no equivalent exists in the current DSL",
   ],
+  [
+    "skill_directories",
+    "legacy skill_directories are not migrated; move or symlink those skills into a directory your harness discovers (for OpenCode, .opencode/skills/)",
+  ],
+  [
+    "disabled_tools",
+    "legacy disabled_tools are not migrated; use tool_policy on agents or categories instead",
+  ],
+  [
+    "tmux",
+    "legacy tmux settings are not supported in migration v1; no equivalent exists in the current DSL",
+  ],
+  [
+    "experimental",
+    "legacy experimental settings are not supported in migration v1; no equivalent exists in the current DSL",
+  ],
+]);
+
+/** JSON metadata keys that carry no Weave settings and are dropped silently. */
+const IGNORED_LEGACY_FIELDS = new Set(["$schema"]);
+
+/** Legacy agent override fields the converter handles (converted or warned). */
+const HANDLED_AGENT_OVERRIDE_FIELDS = new Set([
+  "fast",
+  "triggers",
+  "model",
+  "fallback_models",
+  "temperature",
+  "prompt_append",
+  "prompt_file",
+  "tools",
+  "display_name",
+  "skills",
+  "mode",
+]);
+
+/** Legacy custom agent fields the converter handles (converted or warned). */
+const HANDLED_CUSTOM_AGENT_FIELDS = new Set([
+  "fast",
+  "triggers",
+  "description",
+  "prompt",
+  "prompt_file",
+  "model",
+  "fallback_models",
+  "temperature",
+  "mode",
+  "prompt_append",
+  "tools",
+  "skills",
+  "display_name",
+]);
+
+/** Legacy category fields the converter handles (converted or warned). */
+const HANDLED_CATEGORY_FIELDS = new Set([
+  "description",
+  "fast",
+  "triggers",
+  "patterns",
+  "model",
+  "fallback_models",
+  "temperature",
+  "prompt_append",
+  "tools",
 ]);
 
 /**
@@ -209,20 +280,39 @@ export function stripJsoncComments(source: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Prompt file safety check
+// Prompt file references
 // ---------------------------------------------------------------------------
 
 /**
- * Filename-only pattern: a safe prompt_file reference is a bare filename
- * (no directory separators) that can be placed directly in `.weave/prompts/`.
- * Paths with directory components (e.g. `../prompts/foo.md`, `/abs/path.md`,
- * `subdir/foo.md`) cannot be safely translated and are warned and skipped.
+ * Legacy Weave resolved `prompt_file` relative to the legacy config directory
+ * and refused absolute paths or paths escaping that directory. Only references
+ * that satisfy the same rule are read and carried over.
  */
-function isPromptFileSafe(promptFile: string): boolean {
-  if (promptFile.length === 0) return false;
-  if (promptFile.includes("/") || promptFile.includes("\\")) return false;
-  if (promptFile.startsWith("..")) return false;
-  return true;
+export function isLegacyPromptFileReferenceSafe(promptFile: string): boolean {
+  if (promptFile.trim().length === 0) return false;
+  if (posix.isAbsolute(promptFile) || win32.isAbsolute(promptFile))
+    return false;
+  // Drive-relative (`C:prompt.md`) and rooted (`\prompt.md`) Windows paths
+  // resolve against another directory, so they are never inside the config dir.
+  if (/^[A-Za-z]:/.test(promptFile) || promptFile.startsWith("\\"))
+    return false;
+  return !promptFile.split(/[\\/]+/).some((segment) => segment === "..");
+}
+
+function warnUnhandledFields(
+  entry: Record<string, unknown>,
+  handled: ReadonlySet<string>,
+  path: string,
+  migrationLabel: string,
+  warnings: ConversionWarning[],
+): void {
+  for (const field of Object.keys(entry)) {
+    if (handled.has(field)) continue;
+    warnings.push({
+      field: `${path}.${field}`,
+      reason: `not supported in ${migrationLabel} migration v1; skipped`,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -335,35 +425,49 @@ function convertLegacyModels(
 }
 
 /**
- * Convert a legacy `prompt_file` value into a DSL `prompt_file "..."` line.
+ * Carry a legacy custom agent `prompt_file` over into the destination
+ * `prompts/` directory as `<agent>.md`.
  *
- * Safe: bare filename (no directory separators) → `  prompt_file "filename.md"`
- * Unsafe: paths with directory components → warn and skip.
+ * The caller pre-reads every safe reference relative to the legacy config
+ * directory; references that are unsafe or could not be read are warned and
+ * skipped.
  */
 function convertLegacyPromptFile(
+  agentName: string,
   value: unknown,
   contextLabel: string,
-): { line: string | undefined; warnings: ConversionWarning[] } {
+  promptFileContents: LegacyPromptFileContents,
+): {
+  line: string | undefined;
+  promptFile: MigratedPromptFile | undefined;
+  warnings: ConversionWarning[];
+} {
   const warnings = createConversionWarnings();
+  const skipped = (reason: string) => {
+    warnings.push({ field: `${contextLabel}.prompt_file`, reason });
+    return { line: undefined, promptFile: undefined, warnings };
+  };
 
-  if (typeof value !== "string") {
-    warnings.push({
-      field: `${contextLabel}.prompt_file`,
-      reason: "expected a string path; skipped",
-    });
-    return { line: undefined, warnings };
+  if (typeof value !== "string")
+    return skipped("expected a string path; skipped");
+  if (!isLegacyPromptFileReferenceSafe(value)) {
+    return skipped(
+      "prompt_file must be a relative path inside the legacy config directory; skipped",
+    );
+  }
+  const content = promptFileContents.get(value);
+  if (content === undefined) {
+    return skipped(
+      "prompt_file could not be read relative to the legacy config directory; skipped",
+    );
   }
 
-  if (!isPromptFileSafe(value)) {
-    warnings.push({
-      field: `${contextLabel}.prompt_file`,
-      reason:
-        "prompt_file contains directory components and cannot be safely translated to the current .weave/prompts/ convention; skipped",
-    });
-    return { line: undefined, warnings };
-  }
-
-  return { line: `  prompt_file "${escapeForDsl(value)}"`, warnings };
+  const promptFile = { path: `${agentName}.md`, content };
+  return {
+    line: `  prompt_file ${quoteForDsl(promptFile.path)}`,
+    promptFile,
+    warnings,
+  };
 }
 
 /**
@@ -375,10 +479,10 @@ function convertLegacyPromptFile(
  * - `temperature` → `temperature <value>`
  * - `prompt_append` → `prompt_append "..."`
  * - `tools` → `tool_policy { ... }`
- * - `prompt_file` → `prompt_file "..."` (safe paths only)
  *
- * Fields without current-DSL equivalents (`display_name`, `skills`, etc.)
- * are warned and skipped.
+ * Legacy Weave ignored `prompt_file` on builtin overrides, so it is warned and
+ * skipped to keep the builtin prompt in effect. Fields without current-DSL
+ * equivalents (`display_name`, `skills`, etc.) are warned and skipped.
  */
 function convertLegacyIntent(
   entry: Record<string, unknown>,
@@ -395,6 +499,17 @@ function convertLegacyIntent(
   }
   const triggers = entry["triggers"];
   if (triggers === undefined) return lines;
+  if (
+    Array.isArray(triggers) &&
+    triggers.some((trigger) => typeof trigger === "object" && trigger !== null)
+  ) {
+    warnings.push({
+      field: `${path}.triggers`,
+      reason:
+        "legacy structured triggers ({ domain, trigger }) are not migrated; add string triggers to the agent if Loom should route to it",
+    });
+    return lines;
+  }
   if (
     !Array.isArray(triggers) ||
     triggers.length === 0 ||
@@ -434,12 +549,11 @@ function convertLegacyAgentEntry(
   }
 
   if (entry["prompt_file"] !== undefined) {
-    const promptFileResult = convertLegacyPromptFile(
-      entry["prompt_file"],
-      `agents.${name}`,
-    );
-    warnings.push(...promptFileResult.warnings);
-    if (promptFileResult.line !== undefined) lines.push(promptFileResult.line);
+    warnings.push({
+      field: `agents.${name}.prompt_file`,
+      reason:
+        "legacy Weave ignored prompt_file on builtin agent overrides; skipped so the builtin prompt stays in effect",
+    });
   }
 
   if (
@@ -464,7 +578,16 @@ function convertLegacyAgentEntry(
       });
     }
   }
+  warnUnhandledFields(
+    entry,
+    HANDLED_AGENT_OVERRIDE_FIELDS,
+    `agents.${name}`,
+    "agent override",
+    warnings,
+  );
 
+  // Every field was skipped: emit nothing rather than an empty override.
+  if (lines.length === 1) return [];
   lines.push("}");
   return lines;
 }
@@ -473,48 +596,84 @@ function convertLegacyAgentEntry(
  * Convert a legacy custom agent entry into a new `agent <name> { ... }` block.
  *
  * Supported fields:
- * - `prompt` (inline) → `prompt "..."`
- * - `prompt_file` → `prompt_file "..."` (safe paths only)
+ * - `description` → `description "..."` (falls back to `display_name`, as legacy did)
+ * - `prompt_file` → copied to `prompts/<name>.md` and referenced by `prompt_file`
+ * - `prompt` (inline) → `prompt "..."` (used when no readable `prompt_file`, as legacy did)
  * - `model` + `fallback_models` → `models [...]`
  * - `temperature` → `temperature <value>`
  * - `mode` → `mode <value>` (if valid)
  * - `prompt_append` → `prompt_append "..."`
  * - `tools` → `tool_policy { ... }`
  *
+ * An agent left without any prompt source is skipped with a warning, because
+ * harness adapters cannot register an agent that has no prompt.
  * Unsupported fields are warned and skipped.
  */
 function convertLegacyCustomAgent(
   name: string,
   entry: Record<string, unknown>,
   warnings: ConversionWarning[],
-): string[] {
+  promptFileContents: LegacyPromptFileContents,
+): { lines: string[]; promptFile: MigratedPromptFile | undefined } {
+  const path = `custom_agents.${name}`;
   const lines: string[] = [`agent ${name} {`];
-  lines.push(...convertLegacyIntent(entry, `custom_agents.${name}`, warnings));
 
-  if (typeof entry["prompt"] === "string") {
-    const escaped = escapeForDsl(entry["prompt"]);
-    lines.push(`  prompt "${escaped}"`);
+  const description = [entry["description"], entry["display_name"]].find(
+    (value): value is string =>
+      typeof value === "string" && value.trim().length > 0,
+  );
+  if (description !== undefined) {
+    lines.push(`  description ${quoteForDsl(description)}`);
   }
 
-  if (entry["prompt_file"] !== undefined && entry["prompt"] === undefined) {
-    const promptFileResult = convertLegacyPromptFile(
-      entry["prompt_file"],
-      `custom_agents.${name}`,
-    );
-    warnings.push(...promptFileResult.warnings);
-    if (promptFileResult.line !== undefined) lines.push(promptFileResult.line);
-  } else if (
-    entry["prompt_file"] !== undefined &&
-    entry["prompt"] !== undefined
-  ) {
+  lines.push(...convertLegacyIntent(entry, path, warnings));
+
+  const inlinePrompt =
+    typeof entry["prompt"] === "string" && entry["prompt"].trim().length > 0
+      ? entry["prompt"]
+      : undefined;
+  if (entry["prompt"] !== undefined && inlinePrompt === undefined) {
     warnings.push({
-      field: `custom_agents.${name}.prompt_file`,
-      reason:
-        "both prompt and prompt_file are set; prompt_file skipped (prompt takes precedence)",
+      field: `${path}.prompt`,
+      reason: "expected a non-empty string; skipped",
     });
   }
 
-  const modelsResult = convertLegacyModels(entry, `custom_agents.${name}`);
+  let promptFile: MigratedPromptFile | undefined;
+  if (entry["prompt_file"] !== undefined) {
+    const promptFileResult = convertLegacyPromptFile(
+      name,
+      entry["prompt_file"],
+      path,
+      promptFileContents,
+    );
+    warnings.push(...promptFileResult.warnings);
+    if (promptFileResult.line !== undefined) {
+      lines.push(promptFileResult.line);
+      promptFile = promptFileResult.promptFile;
+      if (inlinePrompt !== undefined) {
+        warnings.push({
+          field: `${path}.prompt`,
+          reason:
+            "both prompt and prompt_file are set; prompt skipped (prompt_file takes precedence, as in legacy Weave)",
+        });
+      }
+    }
+  }
+  if (promptFile === undefined && inlinePrompt !== undefined) {
+    lines.push(`  prompt ${quoteForDsl(inlinePrompt)}`);
+  }
+  if (promptFile === undefined && inlinePrompt === undefined) {
+    warnings.push({
+      field: path,
+      reason:
+        "custom agent has no usable prompt or prompt_file; agent skipped because harness adapters cannot register an agent without a prompt",
+    });
+    warnUnsupportedCustomAgentFields(entry, name, warnings);
+    return { lines: [], promptFile: undefined };
+  }
+
+  const modelsResult = convertLegacyModels(entry, path);
   warnings.push(...modelsResult.warnings);
   if (modelsResult.lines.length > 0) lines.push(...modelsResult.lines);
 
@@ -552,9 +711,18 @@ function convertLegacyCustomAgent(
     warnings.push(...toolResult.warnings);
     if (toolResult.lines.length > 0) lines.push(...toolResult.lines);
   }
+  warnUnsupportedCustomAgentFields(entry, name, warnings);
 
-  const unsupportedCustomAgentFields = ["skills", "display_name"];
-  for (const field of unsupportedCustomAgentFields) {
+  lines.push("}");
+  return { lines, promptFile };
+}
+
+function warnUnsupportedCustomAgentFields(
+  entry: Record<string, unknown>,
+  name: string,
+  warnings: ConversionWarning[],
+): void {
+  for (const field of ["skills", "display_name"]) {
     if (entry[field] !== undefined) {
       warnings.push({
         field: `custom_agents.${name}.${field}`,
@@ -562,9 +730,13 @@ function convertLegacyCustomAgent(
       });
     }
   }
-
-  lines.push("}");
-  return lines;
+  warnUnhandledFields(
+    entry,
+    HANDLED_CUSTOM_AGENT_FIELDS,
+    `custom_agents.${name}`,
+    "custom agent",
+    warnings,
+  );
 }
 
 /**
@@ -597,6 +769,13 @@ function convertLegacyCategory(
       field: `categories.${name}.description`,
       reason: "a non-empty category description is required; category skipped",
     });
+    warnUnhandledFields(
+      entry,
+      HANDLED_CATEGORY_FIELDS,
+      `categories.${name}`,
+      "category",
+      warnings,
+    );
     return [];
   }
   lines.push(`  description ${quoteForDsl(entry["description"])}`);
@@ -634,6 +813,13 @@ function convertLegacyCategory(
     warnings.push(...toolResult.warnings);
     if (toolResult.lines.length > 0) lines.push(...toolResult.lines);
   }
+  warnUnhandledFields(
+    entry,
+    HANDLED_CATEGORY_FIELDS,
+    `categories.${name}`,
+    "category",
+    warnings,
+  );
 
   lines.push("}");
   return lines;
@@ -663,7 +849,10 @@ function convertLegacyCategory(
  * - `categories`       → category blocks
  *
  * Explicitly unsupported (warn + skip):
- * - `workflows`, `continuation`, `analytics`, `background`
+ * - `workflows`, `continuation`, `analytics`, `background`,
+ *   `skill_directories`, `disabled_tools`, `tmux`, `experimental`
+ *
+ * Ignored silently: `$schema` (JSON metadata).
  */
 function isSafeRecord(
   value: SafeGraphValue,
@@ -676,26 +865,32 @@ function appendValidBlock(
   blockLines: string[],
   warnings: ConversionWarning[],
   field: string,
-): void {
+): boolean {
+  if (blockLines.length === 0) return false;
   const block = blockLines.join("\n");
   if (parseConfig(block).isOk()) {
     dslLines.push(block);
-    return;
+    return true;
   }
   warnings.push({
     field,
     reason:
       "converted DSL did not validate against the current schema; omitted",
   });
+  return false;
 }
 
-function convertCopiedRoot(parsed: {
-  [key: string]: SafeGraphValue;
-}): ConversionResult {
+function convertCopiedRoot(
+  parsed: { [key: string]: SafeGraphValue },
+  promptFileContents: LegacyPromptFileContents,
+): Result<ConversionResult, LegacyConversionError> {
   const warnings = createConversionWarnings();
   const dslLines: string[] = [];
+  const promptFiles: MigratedPromptFile[] = [];
 
   for (const [key, value] of Object.entries(parsed)) {
+    if (IGNORED_LEGACY_FIELDS.has(key)) continue;
+
     const unsupportedReason = UNSUPPORTED_LEGACY_FIELDS.get(key);
     if (unsupportedReason !== undefined) {
       warnings.push({ field: key, reason: unsupportedReason });
@@ -857,17 +1052,21 @@ function convertCopiedRoot(parsed: {
           });
           continue;
         }
-        const agentLines = convertLegacyCustomAgent(
+        const converted = convertLegacyCustomAgent(
           agentName,
           agentEntry as Record<string, unknown>,
           warnings,
+          promptFileContents,
         );
-        appendValidBlock(
+        const appended = appendValidBlock(
           dslLines,
-          agentLines,
+          converted.lines,
           warnings,
           `custom_agents.${agentName}`,
         );
+        if (appended && converted.promptFile !== undefined) {
+          promptFiles.push(converted.promptFile);
+        }
       }
       continue;
     }
@@ -918,13 +1117,21 @@ function convertCopiedRoot(parsed: {
   }
 
   const dsl = dslLines.join("\n");
-  if (dsl.length === 0 || parseConfig(dsl).isOk()) return { dsl, warnings };
+  if (dsl.length === 0 || parseConfig(dsl).isOk()) {
+    return ok({ dsl, warnings, promptFiles });
+  }
   warnings.push({
     field: "<dsl>",
     reason:
       "converted DSL did not validate against the current schema; output omitted",
   });
-  return { dsl: "", warnings };
+  return err({ type: "ConvertedDslInvalid", warnings });
+}
+
+function sourceUnreadable(reason: string): LegacyConversionError {
+  const warnings = createConversionWarnings();
+  warnings.push({ field: "<source>", reason });
+  return { type: "SourceUnreadable", warnings };
 }
 
 const parseJsoncSource = Result.fromThrowable(
@@ -941,35 +1148,90 @@ const parseJsoncSource = Result.fromThrowable(
   (): undefined => undefined,
 );
 
+/** Options for legacy conversion. */
+export type LegacyConversionOptions = {
+  /** Pre-read contents of legacy custom agent `prompt_file` references. */
+  promptFileContents?: LegacyPromptFileContents;
+};
+
 /** Convert an already-parsed legacy value through the descriptor-safe graph boundary. */
-export function convertLegacyValue(value: unknown): ConversionResult {
+export function convertLegacyValue(
+  value: unknown,
+  options: LegacyConversionOptions = {},
+): Result<ConversionResult, LegacyConversionError> {
   const copied = copySafeGraph(value);
-  if (copied.isErr() || !isSafeRecord(copied.value)) {
-    const warnings = createConversionWarnings();
-    warnings.push({
-      field: "<source>",
-      reason: copied.isErr()
-        ? "legacy value contains unsafe or excessive structure; no fields could be converted"
-        : "legacy JSONC root must be an object; no fields could be converted",
-    });
-    return { dsl: "", warnings };
+  if (copied.isErr()) {
+    return err(
+      sourceUnreadable(
+        "legacy value contains unsafe or excessive structure; no fields could be converted",
+      ),
+    );
   }
-  return convertCopiedRoot(copied.value);
+  if (!isSafeRecord(copied.value)) {
+    return err(
+      sourceUnreadable(
+        "legacy JSONC root must be an object; no fields could be converted",
+      ),
+    );
+  }
+  return convertCopiedRoot(
+    copied.value,
+    options.promptFileContents ?? new Map(),
+  );
 }
 
-export function convertLegacyJsonc(source: string): ConversionResult {
+/**
+ * Convert a legacy weave-opencode.jsonc source. Individual fields that cannot
+ * be converted become warnings on a successful result; the result is an error
+ * only when nothing can be converted, in which case callers must write nothing.
+ */
+export function convertLegacyJsonc(
+  source: string,
+  options: LegacyConversionOptions = {},
+): Result<ConversionResult, LegacyConversionError> {
   const inspected = inspectLegacyJsonc(source);
-  if (inspected.isErr()) return { dsl: "", warnings: inspected.error.warnings };
+  if (inspected.isErr()) {
+    return err({
+      type: "SourceUnreadable",
+      warnings: inspected.error.warnings,
+    });
+  }
 
   const parsed = parseJsoncSource(source);
   if (parsed.isErr() || parsed.value === undefined) {
-    const warnings = createConversionWarnings();
-    warnings.push({
-      field: "<source>",
-      reason:
+    return err(
+      sourceUnreadable(
         "failed to parse legacy JSONC source; no fields could be converted",
-    });
-    return { dsl: "", warnings };
+      ),
+    );
   }
-  return convertLegacyValue(parsed.value);
+  return convertLegacyValue(parsed.value, options);
+}
+
+/**
+ * List the safe custom agent `prompt_file` references in a legacy source, so
+ * the caller can read them relative to the legacy config directory before
+ * conversion. Returns an empty list when the source cannot be converted.
+ */
+export function listLegacyPromptFileReferences(source: string): string[] {
+  if (inspectLegacyJsonc(source).isErr()) return [];
+  const parsed = parseJsoncSource(source);
+  if (parsed.isErr()) return [];
+  const copied = copySafeGraph(parsed.value);
+  if (copied.isErr() || !isSafeRecord(copied.value)) return [];
+  const customAgents = copied.value["custom_agents"];
+  if (customAgents === undefined || !isSafeRecord(customAgents)) return [];
+
+  const references = new Set<string>();
+  for (const entry of Object.values(customAgents)) {
+    if (!isSafeRecord(entry)) continue;
+    const promptFile = entry["prompt_file"];
+    if (
+      typeof promptFile === "string" &&
+      isLegacyPromptFileReferenceSafe(promptFile)
+    ) {
+      references.add(promptFile);
+    }
+  }
+  return [...references];
 }
