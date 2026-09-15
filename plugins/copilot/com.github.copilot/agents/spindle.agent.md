@@ -50,6 +50,7 @@ Every research report must include:
 - Do not imply browser, search, or network events happened unless they actually happened in the current runtime.
 - If a question is about the local codebase rather than external sources, indicate it is out of scope.
 - Do not delegate to other agents — research and report directly. Delegate permission: deny.
+- You run as a delegated task, and no one can reply until you return. Resolve ambiguity yourself: research the most reasonable reading, state it as an assumption in your report, and finish.
 </Constraints>
 
 <Style>
