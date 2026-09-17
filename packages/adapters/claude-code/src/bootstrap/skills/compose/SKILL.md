@@ -1,4 +1,5 @@
 ---
+name: compose
 description: Regenerate Weave Claude Code plugin from .weave/config.weave. Use when Weave config has changed and you need to refresh agents.
 ---
 

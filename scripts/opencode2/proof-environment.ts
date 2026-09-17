@@ -4,6 +4,7 @@ import { err, ok, type Result, ResultAsync } from "neverthrow";
 export const OPENCODE2_PROOF_HOST_VERSION = "0.0.0-beta-19151" as const;
 export const OPENCODE2_PROOF_ROOT =
   "/private/var/folders/00/kg4g6rwj56df8m493xpgm7s00000gn/T/opencode";
+const PROOF_API_KEY_ENV = "WEAVE_PROOF_API_KEY";
 
 export type ProofEnvironmentError = {
   readonly type: "CommandFailed" | "FileFailed" | "IdentityFailed";
@@ -195,7 +196,7 @@ export class OpenCode2ProofEnvironment {
       XDG_DATA_HOME: this.xdgData,
       XDG_CACHE_HOME: this.xdgCache,
       XDG_STATE_HOME: this.xdgState,
-      WEAVE_PROOF_API_KEY: "proof",
+      [PROOF_API_KEY_ENV]: "proof",
     };
   }
 
@@ -254,11 +255,11 @@ export class OpenCode2ProofEnvironment {
       providers: {
         proof: {
           name: "Proof",
-          env: ["WEAVE_PROOF_API_KEY"],
+          env: [PROOF_API_KEY_ENV],
           package: "@opencode-ai/ai/providers/openai-compatible",
           settings: {
             baseURL: `${providerURL}/v1`,
-            apiKey: "{env:WEAVE_PROOF_API_KEY}",
+            apiKey: `{env:${PROOF_API_KEY_ENV}}`,
           },
           models: {
             "proof-model": {

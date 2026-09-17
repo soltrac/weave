@@ -22,6 +22,9 @@ import {
 type Client = ReturnType<typeof OpenCode.make>;
 type Service = typeof ServiceType;
 
+const PROOF_SCOPE = "runtime-proof";
+const WRONG_LOCATION_SCOPE = "wrong-location";
+
 type RuntimeProofError =
   | { readonly type: "Environment"; readonly error: ProofEnvironmentError }
   | { readonly type: "Provider"; readonly error: ProofProviderError }
@@ -288,7 +291,7 @@ class OpenCode2RuntimeProof {
           sessionID: session.value.id,
           directory: this.environment.project,
           workspaceID: session.value.location.workspaceID,
-          scopeToken: "runtime-proof",
+          scopeToken: PROOF_SCOPE,
         },
         { location },
       ),
@@ -313,7 +316,7 @@ class OpenCode2RuntimeProof {
           sessionID: session.value.id,
           directory: this.environment.project,
           workspaceID: session.value.location.workspaceID,
-          scopeToken: "runtime-proof",
+          scopeToken: PROOF_SCOPE,
         },
         { location },
       ),
@@ -422,7 +425,7 @@ class OpenCode2RuntimeProof {
                 sessionID: session.value.id,
                 directory: resolve(this.environment.root, "wrong-location"),
                 workspaceID: session.value.location.workspaceID,
-                scopeToken: "wrong-location",
+                scopeToken: WRONG_LOCATION_SCOPE,
               },
               { location },
             ),

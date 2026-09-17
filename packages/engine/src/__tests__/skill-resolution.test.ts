@@ -154,7 +154,7 @@ describe("SkillInfo — adapter metadata pass-through", () => {
       path: "/adapters/opencode/skills/tdd.md",
       scope: "project",
       mountPoint: "opencode://skills/tdd",
-      apiKey: "should-not-be-read-by-engine",
+      apiKey: "example-key-not-read-by-engine",
     };
 
     const skill: SkillInfo = { name: "tdd", metadata: adapterMetadata };
