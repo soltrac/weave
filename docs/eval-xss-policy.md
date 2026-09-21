@@ -89,6 +89,23 @@ All strings placed into the Markdown document go through one of:
 
 None of these channels can produce `<script>`, `<style>`, inline event handlers, `javascript:` URIs, `data:` URIs, or `<iframe>` tags in the rendered output.
 
+#### Closed — the run's suite list
+
+`renderPublicReportBundle()` sanitized the `### Suite:` heading but
+interpolated `runSummary.suites` straight into the run header line, so a
+suite name containing `<script>` reached `public-report.md` verbatim. It is
+now escaped the same way the heading is.
+
+Worth recording how it survived: every malicious-suite case in the unit
+tests set `suiteSummaries[].suite` and left `runSummary.suites` clean, so
+the unescaped line was never once exercised. Exposure was bounded — suite
+names come from the repo-owned `EVAL_SUITE_REGISTRY` rather than model
+output — but a layer-2 defence had a gap in it, and the tests that were
+meant to cover the renderer could not see it.
+
+[`tests/evals/reporting.scenario.test.ts`](../tests/evals/reporting.scenario.test.ts)
+now asserts the escaping, and reverting the renderer turns it red.
+
 ### `MARKDOWN_INJECTION_PATTERNS`
 
 These patterns are checked in `report-markdown.ts` via `isMarkdownSafe()` and `sanitizeMdValue()`:
@@ -173,7 +190,8 @@ The XSS policy is covered by malicious fixture tests:
 
 | Test file | Coverage |
 |---|---|
-| `packages/cli/src/evals/__tests__/report-markdown.test.ts` | `MARKDOWN_INJECTION_PATTERNS`, `isMarkdownSafe()`, `sanitizeMdValue()`, `renderCaseRow()`, `renderSuiteSummary()`, `renderPublicReportBundle()` with malicious caseId/modelId/suite/explanation inputs |
+| [`tests/evals/reporting.scenario.test.ts`](../tests/evals/reporting.scenario.test.ts) | The rendered `public-report.md` itself, written through `ArtifactBundleWriter`: a malicious `caseId`, `modelId` or `explanation.text` is dropped from the document while the case still appears, pipes are escaped to `&#124;`, and an ordinary report carries none of the banned constructs. Replaces the former `report-markdown.test.ts`, which drove the renderer's functions directly |
+| [`tests/evals/publish-safety.scenario.test.ts`](../tests/evals/publish-safety.scenario.test.ts) | The same payload table against every artifact a reader can receive, `public-report.md` and the dashboard indexes included |
 | `packages/cli/src/evals/__tests__/report-bundle.test.ts` | `assembleCaseEntry()` drops malicious explanations, `assemblePublicReportBundle()` produces clean JSON, `assertJsonPublishSafe()` round-trip |
 | `weave-website/evals/shared/__tests__/dashboard-data.test.js` | Legacy section: `escapeHtml()` policy, malicious JSONL field values, `innerHTML` injection policy, `data-*` attribute injection, `public-report.md` download-only policy |
 | `weave-website/weave-agent-evals/shared/__tests__/dashboard-data.test.js` | New section: same XSS categories tested against exported `escapeHtml`, `safeTextSpan`, `safeTableCell`, `safeDataAttr`, `isHtmlInjectionFree` helpers; 94 malicious-fixture cases |
