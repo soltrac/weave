@@ -1,6 +1,9 @@
 # Libraries
 
 - `evals/fixtures/buggy-slugify/src/slugify.ts` — function slugify: (input) => string
+- `evals/fixtures/orders-api/src/api/orders.ts` — function getOrder: (id) => HttpResponse, interface HttpResponse
+- `evals/fixtures/orders-api/src/db/orders.ts` — function findOrder: (id) => Order | undefined, interface Order
+- `evals/fixtures/orders-api/src/ui/order-badge.ts` — function orderBadge: (order) => string
 - `evals/fixtures/plan-bash-verification/src/slugify.ts` — function slugify: (input) => string
 - `packages/adapters/claude-code/src/adapter.ts` — class ClaudeCodeAdapter, interface ClaudeCodeAdapterOptions
 - `packages/adapters/claude-code/src/agent-translation.ts` — function translateAgentToMarkdown: (input) => string, interface AgentTranslationInput
@@ -332,6 +335,12 @@
   - const DEFAULT_OPENROUTER_BASE_URL
   - const OPENROUTER_API_KEY_ENV_VAR
   - const OPENROUTER_BASE_URL_ENV_VAR
+- `packages/cli/src/evals/eval-track.ts`
+  - function caseTrack: (evalCase) => EvalTrack
+  - function selectCasesForTrack: (cases, track) => EvalCase[]
+  - function suiteSupportsTrack: (suite, track) => boolean
+  - type EvalTrack
+  - const EVAL_TRACKS
 - `packages/cli/src/evals/github-contents-publisher.ts`
   - function isIndexArtifactAllowed: (fileName) => boolean
   - class GitHubContentsPublisher

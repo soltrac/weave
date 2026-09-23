@@ -64,6 +64,7 @@ import {
   OPENROUTER_API_KEY_ENV_VAR,
   readEvalEnv,
 } from "./env.js";
+import { suiteSupportsTrack } from "./eval-track.js";
 import type { EvalRunRequest } from "./input-validation.js";
 import type { AgentEvalsScorer } from "./langchain-agent-evals.js";
 import type { LoomDelegationMatrixPreflightError } from "./loom-delegation-matrix.js";
@@ -1054,9 +1055,32 @@ export class EvalOrchestrator {
     },
     CliError
   > {
-    const selectedSuites = EVAL_SUITE_REGISTRY.filter((suite) =>
-      this.shouldRunSuite(request.agent, suite.suiteId, suite.shortAgentFilter),
+    // `--track trajectory` selects only the suites that can hold
+    // `harness_trajectory` cases; the text track keeps every suite.
+    const selectedSuites = EVAL_SUITE_REGISTRY.filter(
+      (suite) =>
+        this.shouldRunSuite(
+          request.agent,
+          suite.suiteId,
+          suite.shortAgentFilter,
+        ) && suiteSupportsTrack(suite, request.track),
     );
+
+    // An agent filter naming a suite that cannot hold the track's cases
+    // (e.g. `--agent pattern --track trajectory`) selects nothing; that must
+    // fail rather than report an empty run as green.
+    if (selectedSuites.length === 0) {
+      return new ResultAsync(
+        Promise.resolve(
+          err({
+            type: "EvalValidation" as const,
+            message:
+              `Agent filter "${request.agent ?? ""}" selects no suite on the ` +
+              `"${request.track ?? ""}" track.`,
+          }),
+        ),
+      );
+    }
 
     const runnerResults: RunnerResult[] = [];
     const partialFailures: RunnerError[] = [];
@@ -1164,7 +1188,12 @@ export class EvalOrchestrator {
   ): { runnerResults: RunnerResult[]; partialFailures: RunnerError[] } {
     const nonEmpty = runnerResults.filter((result) => result.totalCases > 0);
     const suitesWithCases = new Set(nonEmpty.map((result) => result.suite));
-    const emptySuiteFailures: RunnerError[] = selectedSuiteIds
+    const toleratesEmptySuites = this.toleratesEmptySuites(
+      request,
+      suitesWithCases,
+    );
+    const emptySuiteIds = toleratesEmptySuites ? [] : selectedSuiteIds;
+    const emptySuiteFailures: RunnerError[] = emptySuiteIds
       .filter((suiteId) => !suitesWithCases.has(suiteId))
       .filter((suiteId) => !failedSuites.has(suiteId))
       .map((suiteId) => ({
@@ -1179,6 +1208,25 @@ export class EvalOrchestrator {
     };
   }
 
+  /**
+   * The trajectory track (`--track trajectory`) with no agent or case filter
+   * runs every trajectory case the selected models may run. A suite whose
+   * trajectory cases allow none of those models is then legitimately empty,
+   * the same way a model outside every case's `allowed_models` is: the loom
+   * trajectory case that runs only on `openai/gpt-4o-mini` must not fail a
+   * default-matrix dispatch. The run still fails when no suite ran anything,
+   * and an explicit agent or case filter keeps the strict rule.
+   */
+  private toleratesEmptySuites(
+    request: EvalRunRequest,
+    suitesWithCases: ReadonlySet<string>,
+  ): boolean {
+    if (request.track !== "trajectory") return false;
+    if (request.agent !== undefined) return false;
+    if (request.case !== undefined) return false;
+    return suitesWithCases.size > 0;
+  }
+
   private describeEmptySuite(suiteId: string, request: EvalRunRequest): string {
     const filters: string[] = [];
     if (request.model !== undefined) {
@@ -1186,6 +1234,9 @@ export class EvalOrchestrator {
     }
     if (request.case !== undefined) {
       filters.push(`case filter "${request.case}"`);
+    }
+    if (request.track !== undefined) {
+      filters.push(`track "${request.track}"`);
     }
     const base = `No cases ran in suite "${suiteId}"`;
     if (filters.length === 0) return `${base}.`;
@@ -1272,6 +1323,7 @@ export class EvalOrchestrator {
       return runner.run({
         caseFilter: request.case,
         modelFilter,
+        track: request.track,
         dryRun: request.dryRun,
         rawArtifacts: request.rawArtifacts,
       });
@@ -1319,6 +1371,7 @@ export class EvalOrchestrator {
     return runner.run({
       caseFilter: request.case,
       modelFilter,
+      track: request.track,
       dryRun: request.dryRun,
       rawArtifacts: request.rawArtifacts,
     });
@@ -1384,6 +1437,7 @@ export class EvalOrchestrator {
     return runner.run({
       caseFilter: request.case,
       modelFilter,
+      track: request.track,
       dryRun: request.dryRun,
       rawArtifacts: request.rawArtifacts,
     });
