@@ -107,6 +107,7 @@ import {
   TapestryExecutionRunner,
 } from "./tapestry-execution-runner.js";
 import type {
+  CaseResultSummary,
   ModelMatrixEntry,
   PromptProvenanceManifest,
   PromptProvider,
@@ -405,6 +406,50 @@ export interface AgentRollup {
 }
 
 // ---------------------------------------------------------------------------
+// Per-case report
+// ---------------------------------------------------------------------------
+
+/**
+ * What the CLI prints about one case × model result after a live run.
+ *
+ * Built from the publishable `CaseResultSummary` plus the path of the case's
+ * local raw artifact. It carries no prompt text, transcript, answer or judge
+ * rationale, so printing it — including to a CI log — discloses nothing the
+ * published bundle does not. The transcript itself stays in the raw file.
+ */
+export interface CaseReport {
+  suite: string;
+  caseId: string;
+  modelId: string;
+  passed: boolean;
+  required: boolean;
+  weightedTotal: number;
+  dimensionScores: CaseResultSummary["dimensionScores"];
+  /** The bounded, publishable explanation, when the runner produced one. */
+  publicExplanation: string | null;
+  /**
+   * Absolute path of the local raw artifact (transcript, answer, rationales)
+   * for this case, or `null` when raw artifacts were not written.
+   */
+  rawArtifactPath: string | null;
+  /**
+   * Why this case has no raw artifact although `--raw-artifacts` was given:
+   * the writer's error type (e.g. `"RawArtifactWriteError"`), or
+   * `"NotProduced"` when the runner made none. `null` when a path was written
+   * or raw artifacts were not requested.
+   */
+  rawArtifactMissing: string | null;
+}
+
+/** The raw artifacts `writeRawArtifacts` wrote or failed to write, per case. */
+interface RawArtifactOutcomes {
+  /** Written file path, keyed by `caseReportKey`. */
+  paths: Map<string, string>;
+  /** Writer error type, keyed by `caseReportKey`. */
+  failures: Map<string, string>;
+}
+
+// ---------------------------------------------------------------------------
 // Run-level summary
 // ---------------------------------------------------------------------------
 
@@ -452,6 +497,11 @@ export interface EvalRunSummary {
   filesWritten: string[];
   /** Paths of any local-only raw artifact files written for this run. */
   rawArtifactsWritten: string[];
+  /**
+   * One report per case × model result, in run order — what the CLI prints
+   * after a live run. Empty for a dry run.
+   */
+  caseReports: CaseReport[];
   /** Summary or failure record for local repeatability diagnostics, when attempted. */
   repeatabilityDiagnostics: RepeatabilityDiagnosticsResult | null;
   /**
@@ -830,6 +880,7 @@ export class EvalOrchestrator {
                   [],
                   [],
                   null,
+                  undefined,
                 ),
               ),
             );
@@ -843,12 +894,13 @@ export class EvalOrchestrator {
             request,
           ).andThen((writeResult) => {
             // Step 7: Optionally write raw artifacts
-            const rawArtifactResults = request.rawArtifacts
+            const rawArtifactResults: Promise<{
+              written: string[];
+              byCase: RawArtifactOutcomes | null;
+              errors: string[];
+            }> = request.rawArtifacts
               ? this.writeRawArtifacts(runnerResults, writeResult.bundleDir)
-              : Promise.resolve({
-                  written: [] as string[],
-                  errors: [] as string[],
-                });
+              : Promise.resolve({ written: [], byCase: null, errors: [] });
 
             return ResultAsync.fromSafePromise(rawArtifactResults).andThen(
               (rawResult) =>
@@ -876,6 +928,7 @@ export class EvalOrchestrator {
                       writeResult.filesWritten,
                       rawResult.written,
                       repeatabilityDiagnostics,
+                      rawResult.byCase,
                     );
                     return summary;
                   }),
@@ -1508,10 +1561,18 @@ export class EvalOrchestrator {
   private async writeRawArtifacts(
     runnerResults: RunnerResult[],
     bundleDir: string,
-  ): Promise<{ written: string[]; errors: string[] }> {
+  ): Promise<{
+    written: string[];
+    byCase: RawArtifactOutcomes;
+    errors: string[];
+  }> {
     const rawWriter = new RawArtifactsWriter(bundleDir, true);
     const timestamp = new Date().toISOString();
     const written: string[] = [];
+    const byCase: RawArtifactOutcomes = {
+      paths: new Map(),
+      failures: new Map(),
+    };
     const errors: string[] = [];
 
     for (const runnerResult of runnerResults) {
@@ -1524,14 +1585,19 @@ export class EvalOrchestrator {
         );
         if (result.isOk()) {
           written.push(result.value);
+          byCase.paths.set(caseReportKey(caseResult.summary), result.value);
         } else {
           // Record the error type (not the raw message — may contain paths)
           errors.push(result.error.type);
+          byCase.failures.set(
+            caseReportKey(caseResult.summary),
+            result.error.type,
+          );
         }
       }
     }
 
-    return { written, errors };
+    return { written, byCase, errors };
   }
 
   // ---------------------------------------------------------------------------
@@ -2083,6 +2149,7 @@ export class EvalOrchestrator {
     filesWritten: string[],
     rawArtifactsWritten: string[],
     repeatabilityDiagnostics: RepeatabilityDiagnosticsResult | null,
+    rawArtifactsByCase: RawArtifactOutcomes | null | undefined,
   ): EvalRunSummary {
     // Aggregate totals
     const totalCases = runnerResults.reduce((s, rr) => s + rr.totalCases, 0);
@@ -2114,9 +2181,49 @@ export class EvalOrchestrator {
       runId,
       filesWritten,
       rawArtifactsWritten,
+      caseReports: this.buildCaseReports(runnerResults, rawArtifactsByCase),
       repeatabilityDiagnostics,
       partialFailures,
     };
+  }
+
+  /**
+   * One `CaseReport` per case result, in run order.
+   *
+   * `rawArtifacts` is `undefined` for a dry run, which scored nothing and so
+   * reports nothing; `null` for a live run without `--raw-artifacts`; and the
+   * per-case outcomes of the raw writer otherwise.
+   */
+  private buildCaseReports(
+    runnerResults: RunnerResult[],
+    rawArtifacts: RawArtifactOutcomes | null | undefined,
+  ): CaseReport[] {
+    if (rawArtifacts === undefined) return [];
+    return runnerResults.flatMap((runnerResult) =>
+      runnerResult.caseResults.map(({ summary }) => ({
+        suite: summary.suite,
+        caseId: summary.caseId,
+        modelId: summary.modelId,
+        passed: summary.passed,
+        required: summary.required,
+        weightedTotal: summary.weightedTotal,
+        dimensionScores: summary.dimensionScores,
+        publicExplanation: summary.publicExplanation?.text ?? null,
+        rawArtifactPath:
+          rawArtifacts?.paths.get(caseReportKey(summary)) ?? null,
+        rawArtifactMissing: this.rawArtifactMissing(rawArtifacts, summary),
+      })),
+    );
+  }
+
+  private rawArtifactMissing(
+    rawArtifacts: RawArtifactOutcomes | null,
+    summary: CaseResultSummary,
+  ): string | null {
+    if (rawArtifacts === null) return null;
+    const key = caseReportKey(summary);
+    if (rawArtifacts.paths.has(key)) return null;
+    return rawArtifacts.failures.get(key) ?? "NotProduced";
   }
 
   /**
@@ -2282,13 +2389,20 @@ export class EvalOrchestrator {
  * say why it exited 1 — for example the `NoCasesFound` of a `--model` filter
  * that matched no fixture (#205).
  *
+ * After a live run the whole summary is handed to `reportRun` first, so the
+ * command can print each case's verdict, the dimensions that fell short and
+ * where its raw transcript was written (Spec 37, 17.2). A dry run scores
+ * nothing and is not reported this way.
+ *
  * @param orchestrator - The configured `EvalOrchestrator` instance.
  * @param reportPartialFailure - Called once per partial failure, in order.
+ * @param reportRun - Called once with the summary of a live run.
  * @returns A runner function suitable for `EvalContext.runner`.
  */
 export function buildEvalRunner(
   orchestrator: EvalOrchestrator,
   reportPartialFailure: (failure: RunnerError) => void = () => {},
+  reportRun: (summary: EvalRunSummary) => void = () => {},
 ): (request: EvalRunRequest) => Promise<Result<number, CliError>> {
   return async (request: EvalRunRequest): Promise<Result<number, CliError>> => {
     const result = await orchestrator.run(request);
@@ -2296,6 +2410,9 @@ export function buildEvalRunner(
       return err(result.error);
     }
     const summary = result.value;
+    if (!request.dryRun) {
+      reportRun(summary);
+    }
     for (const failure of summary.partialFailures) {
       reportPartialFailure(failure);
     }
@@ -2347,6 +2464,13 @@ function makeDefaultSnapshotProvider(): SnapshotProvider {
       }
     },
   };
+}
+
+/** The key `writeRawArtifacts` and `buildCaseReports` share for one case result. */
+function caseReportKey(
+  summary: Pick<CaseResultSummary, "suite" | "caseId" | "modelId">,
+): string {
+  return `${summary.suite}\u0000${summary.caseId}\u0000${summary.modelId}`;
 }
 
 export function getEvalCoveredPromptAgents(): readonly string[] {
