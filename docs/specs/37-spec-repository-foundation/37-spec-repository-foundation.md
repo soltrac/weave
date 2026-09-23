@@ -1,6 +1,6 @@
 # Spec 37 — Repository Foundation
 
-**Status:** In progress — G1 and G3 have largely landed (#186, #194); see [37 tasks](37-tasks-repository-foundation.md) for what remains. Since 23 Sep 2026 the eval goals G9–G11 come first · **Workstream:** WS0 of the [September 2026 session audit](../../artifacts/session-audit-2026-09.md)
+**Status:** In progress — G1 and G3 have largely landed (#186, #194); see [37 tasks](37-tasks-repository-foundation.md) for what remains. Since 23 Sep 2026 the eval goals G9–G11 come first, up to the [finish line](#finish-line-for-the-eval-work-23-sep-2026) · **Workstream:** WS0 of the [September 2026 session audit](../../artifacts/session-audit-2026-09.md)
 
 **Related:** [37 tasks](37-tasks-repository-foundation.md) · [Agent Evals](../../agent-evals.md) · [Eval Sanitization and Publish Pipeline](../../eval-sanitization-and-publish-pipeline.md) · [Spec 33 — Harness Trajectory Evals](../33-spec-harness-trajectory-evals/33-spec-harness-trajectory-evals.md) · [Spec 35 — Verification Trajectory Evals](../35-spec-verification-trajectory-evals/35-spec-verification-trajectory-evals.md) · [Documentation Policy](../../documentation-policy.md)
 
@@ -60,9 +60,26 @@ Added after the maintainer decided the agent evals must be fixed before any agen
 | G6 | An eval failure can be diagnosed from one command. | `bun packages/cli/src/main.ts eval run --agent <suite> --case <id> --model <id>` (or a documented equivalent) prints the verdict, the rubric criteria that failed, and where the raw transcript was written, without publishing. |
 | G7 | Real sessions are measurable. | `bun scripts/audit/opencode-sessions.ts --since <date> [--project <path>]` reproduces the September baseline within rounding and prints the scorecard as Markdown and JSON. |
 | G8 | Published scores describe current prompts. | After G3, G4 and G9–G11 land, a full default-matrix eval run on current `main`, with each case repeated, is published as the baseline and the website shows it, including the commit the run used. |
-| G9 | Eval scores are truthful. | No suite reports green with zero cases, and a run with zero cases is never published or indexed. A failing judge verdict can fail a category-routing case, and the `shuttle-{category}` placeholder scores 0. The judge is chosen by agreement with maintainer hand labels (`docs/artifacts/judge-bakeoff-<date>.md`), is not a scored matrix model, and its id and version are recorded in provenance and in the report. |
+| G9 | Eval scores are truthful. | No suite reports green with zero cases, and a run with zero cases is never published or indexed. A failing judge verdict can fail a category-routing case, and the `shuttle-{category}` placeholder scores 0. The judge is never an evaluated model. It is Jev, accepted by agreement with maintainer hand labels (`docs/artifacts/judge-bakeoff-<date>.md`), and its id and version are recorded in provenance and in the report. |
 | G10 | Eval runs are repeatable, comparable and cheap to iterate on. | A development subset of one or two inexpensive models runs without editing the matrix. `eval run --repeat N` reports a pass rate per case and model. `eval compare <baseline> <candidate>` states per suite whether a difference is outside the noise, and refuses to compare runs scored by different judges. Per-case flip rates are recorded, and each suite has at least the case count they call for. |
 | G11 | Evals cover runtime behaviour. | `harness_trajectory` cases cover delegation accuracy, parallel execution and environment awareness, each tied to a session-audit metric, and the trajectory job runs on every manual dispatch instead of being skipped. |
+
+## Finish line for the eval work (23 Sep 2026)
+
+The maintainer's decision: the evals need to run reliably and predictably, be easy to understand and exercise realistic scenarios. Once they do, the eval work stops. Good enough beats perfect; no further improvement loops.
+
+The eval work is done when:
+
+1. One command runs a realistic eval set predictably: `weave eval run --models dev --repeat 3` completes without infrastructure errors, at a known time and cost.
+2. Every failure can be explained with single-case diagnosis (17.2, #224).
+3. `eval compare` tells a real change from noise (18.2, #226).
+4. The cases include realistic runtime scenarios: one trajectory case each for delegation accuracy, parallel execution and environment awareness (20.1).
+5. A one-page overview explains how evals work and how to run them (6.1).
+6. A baseline on `main` is recorded as a docs artifact.
+
+After that, WS1 starts. Evals change only when a WS change needs it.
+
+This narrows some goals. The baseline (G8) stays a local artifact and is not published to the website. The runner audit (G5), suite growth (G10) and the website contract (G4) are deferred. G2 and G7 are deferred too. The [tasks file](37-tasks-repository-foundation.md) lists what remains and what is deferred.
 
 ## Non-goals
 
@@ -80,4 +97,5 @@ Added after the maintainer decided the agent evals must be fixed before any agen
 - Cross-repository changes (G4) land in `weave-io/weave` first, publishing the schema; `weave-website` then consumes it. Neither side may break the currently deployed page.
 - Report schema changes from G10 (repeats) and G9 (judge id and version) land before G4 publishes the versioned contract, so the contract is written once.
 - Baselines are only compared with runs scored by the same judge id and version.
+- The judge is never an evaluated model. Any chat model used as judge could not join the matrix without grading itself, so the judge is Jev, a decisions model that can never be evaluated (decided 23 Sep 2026). If Jev fails its acceptance check (16.3), the fallback is a chat model deliberately kept out of the matrix, recorded as a known limitation.
 - Every user-visible change (G4, G8) includes a tryweave.io update ([website repo](https://github.com/pgermishuys/weave-website)).
