@@ -9,3 +9,5 @@ OpenCode renamed its packages to the `@opencode/*` scope and, from 2.0.4, remove
 The Podman verify harness is ported to the same host: plugin activation is observed through `plugin.list()` state, the layer-5 fixture no longer inherits a duplicate plugin entry from an ancestor config, the proof model context limit is raised so runs do not trip automatic compaction, the image check accepts the V2 `opencode` binary, and the standalone cleanup marker is reported rather than asserted because the 2.0.x CLI terminates its standalone server before plugin cleanup runs.
 
 Windows hosts: plan catalog and plan snapshot reads use `node:fs` instead of the POSIX `test`/`realpath` binaries, the started plan is stored with the normalized scope directory so the plan RPC recognises it, and `projectConfig: false` matches the project config path.
+
+The TUI plan panel uses the 2.0.x theme tokens (`text.feedback.*.base`, `text.muted`) instead of the removed `text.status.running`, `text.subdued` and `feedback.*.default`, which crashed `weave.tui` in the composer slot.
