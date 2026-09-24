@@ -22,6 +22,14 @@
   cleanup marker is reported rather than asserted because the 2.0.x CLI
   terminates its standalone server with SIGTERM before plugin cleanup runs.
 
+- Windows: plan reads no longer depend on the POSIX `test`/`realpath` binaries.
+  `listPlanNames` and `@weaveio/weave-config`'s `BunPlanTaskFileReader` now use
+  `node:fs`, so `/weave:start` no longer answers "Weave could not list plans"
+  (or "missing, invalid, or unavailable") on hosts launched outside a POSIX
+  shell. The started plan is stored with the normalized scope directory so the
+  plan RPC no longer rejects it as another Location on native `C:\` paths,
+  and `projectConfig: false` now matches the project config path on Windows.
+
 - Route the native `./server` entry through the catalog-backed core integration.
   Preserve the root `OpenCode2Adapter` facade and the V1 package independently.
 - Add config refresh, native foreground/background delegation, and read-only
