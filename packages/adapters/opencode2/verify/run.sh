@@ -119,9 +119,9 @@ fi
 
 echo "==> Layer 9/9: version-drift check"
 if (cd "${PKG_DIR}" && bun run verify/checks/version-drift.ts); then
-  abort_on_failure "9-version-drift" "passed" "all V2 SDK pins match 0.0.0-beta-19151"
+  abort_on_failure "9-version-drift" "passed" "all V2 SDK pins match 2.0.16"
 else
-  abort_on_failure "9-version-drift" "failed" "a V2 SDK pin has drifted from 0.0.0-beta-19151"
+  abort_on_failure "9-version-drift" "failed" "a V2 SDK pin has drifted from 2.0.16"
 fi
 
 if ! command -v podman >/dev/null 2>&1; then
@@ -139,16 +139,16 @@ echo "==> Building adapter bundle (bun build) for the container"
 if ! (cd "${PKG_DIR}" && bun build ./src/index.ts \
   --outdir "${BUILD_STAGE}/adapter/dist" \
   --target bun \
-  --external @opencode-ai/plugin --external @opencode-ai/sdk \
-  --external @opencode-ai/client --external mustache \
+  --external @opencode/plugin --external @opencode/sdk \
+  --external @opencode/client --external mustache \
   --external neverthrow --external zod); then
   abort_on_failure "3-6-build" "failed" "bun build of src/index.ts failed"
 fi
 if ! (cd "${PKG_DIR}" && bun build ./src/server.ts \
   --outdir "${BUILD_STAGE}/adapter/dist" \
   --target bun \
-  --external @opencode-ai/plugin --external @opencode-ai/sdk \
-  --external @opencode-ai/client --external mustache \
+  --external @opencode/plugin --external @opencode/sdk \
+  --external @opencode/client --external mustache \
   --external neverthrow --external zod); then
   abort_on_failure "3-6-build" "failed" "bun build of src/server.ts failed"
 fi
@@ -190,7 +190,7 @@ else
 fi
 
 echo "==> Layer 5/9: agent-materialization test — embedded (all declared agents via host.agent.list())"
-if podman run --rm -e FIXTURE_DIR=/work/verify/fixtures/agent-materialization "${IMAGE_TAG}" -c 'cd /work && timeout 30 bun run verify/container-smoke.ts agent-materialization'; then
+if podman run --rm -e FIXTURE_DIR=/work/verify/fixtures-layer5 "${IMAGE_TAG}" -c 'cd /work && timeout 30 bun run verify/container-smoke.ts agent-materialization'; then
   abort_on_failure "5-agent-materialization" "passed" "host.agent.list() reports every declared Weave agent as Weave-owned"
 else
   abort_on_failure "5-agent-materialization" "failed" "host.agent.list() did not report every declared Weave agent as Weave-owned"

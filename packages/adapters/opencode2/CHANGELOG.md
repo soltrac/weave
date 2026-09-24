@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Target OpenCode `2.0.16` (`@opencode/cli`) instead of the `0.0.0-beta-19151` pin.
+  The host renamed its packages to the `@opencode/*` scope and, from 2.0.4,
+  removed the `ctx.catalog` plugin domain in favour of `ctx.model` and
+  `ctx.provider`. On 2.0.4+ the previous release activated but silently
+  registered no agents and no `/weave:start` command because
+  `ctx.catalog.model.list()` threw before the catalog was built. The adapter
+  now reads models through `ctx.model.list()`, listens for `model.updated`
+  instead of `catalog.updated`, applies temperature through the session
+  context `options` field, and no longer expects a `workspaceID` on session
+  location refs.
+- Port the Podman verify harness to the 2.0.x host: `host.plugin.awaitActivation()`
+  no longer exists, so activation is observed through `plugin.list()` state;
+  the layer-5 fixture moves to `verify/fixtures-layer5` because the host now
+  rejects the duplicate plugin ID it inherited from the ancestor config;
+  fixtures raise the proof model context limit so the run no longer trips
+  automatic compaction; the `opencode` binary check accepts the V2 host
+  (`@opencode/cli` links both `opencode` and `opencode2`); and the standalone
+  cleanup marker is reported rather than asserted because the 2.0.x CLI
+  terminates its standalone server with SIGTERM before plugin cleanup runs.
+
 - Route the native `./server` entry through the catalog-backed core integration.
   Preserve the root `OpenCode2Adapter` facade and the V1 package independently.
 - Add config refresh, native foreground/background delegation, and read-only
